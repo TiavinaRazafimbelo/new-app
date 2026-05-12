@@ -1,0 +1,99 @@
+/**
+ * Styles de la page Reset Data
+ * Design professionnel et simple
+ */
+
+.reset-page {
+  animation: fadeIn 0.3s ease-in;
+}
+
+.reset-page h2 {
+  color: #1a1a1a;
+  margin: 0 0 24px 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.reset-content {
+  background: white;
+  border-radius: 6px;
+  padding: 32px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.reset-warning {
+  border: 2px solid #dc2626;
+  border-radius: 6px;
+  padding: 24px;
+  background-color: #fef2f2;
+  text-align: center;
+}
+
+.reset-warning h3 {
+  color: #991b1b;
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.reset-warning p {
+  color: #7f1d1d;
+  margin: 8px 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.warning-text {
+  color: #b91c1c;
+  font-weight: 600;
+  margin: 12px 0 !important;
+}
+
+.reset-button {
+  background-color: #dc2626;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 16px;
+  transition: all 0.3s;
+  font-family: inherit;
+}
+
+.reset-button:hover {
+  background-color: #b91c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);
+}
+
+.reset-button:active {
+  transform: translateY(0);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .reset-page h2 {
+    font-size: 20px;
+  }
+
+  .reset-content {
+    padding: 20px;
+  }
+
+  .reset-warning {
+    padding: 16px;
+  }
+}

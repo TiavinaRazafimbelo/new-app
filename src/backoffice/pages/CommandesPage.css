@@ -1,0 +1,478 @@
+/**
+ * CommandesPage.css
+ * ─────────────────────────────────────────────────────────────
+ * Styles de la page de gestion des commandes PrestaShop.
+ * Design : industriel/utilitaire — précis, lisible, sans fioriture.
+ * Palette : blanc cassé, noir charbon, accents bleu ardoise.
+ * Police : "IBM Plex Mono" pour les IDs/refs, "DM Sans" pour le texte.
+ * ─────────────────────────────────────────────────────────────
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+/* ─── Variables ─────────────────────────────────────────────── */
+:root {
+  --c-bg:          #f5f4f2;
+  --c-surface:     #ffffff;
+  --c-border:      #e2e0db;
+  --c-texte:       #1a1814;
+  --c-texte-doux:  #6b6860;
+  --c-accent:      #2563a8;
+  --c-accent-hover:#1d4f8a;
+  --c-vert:        #166534;
+  --c-vert-bg:     #dcfce7;
+  --c-rouge:       #991b1b;
+  --c-rouge-bg:    #fee2e2;
+  --c-orange:      #92400e;
+  --c-orange-bg:   #fef3c7;
+  --c-bleu:        #1e3a5f;
+  --c-bleu-bg:     #dbeafe;
+  --c-gris:        #374151;
+  --c-gris-bg:     #f3f4f6;
+  --rayon:         4px;
+  --ombre:         0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+}
+
+/* ─── Page wrapper ──────────────────────────────────────────── */
+.commandes-page {
+  font-family: 'DM Sans', sans-serif;
+  color: var(--c-texte);
+  animation: entree 0.25s ease-out both;
+}
+
+@keyframes entree {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── En-tête ───────────────────────────────────────────────── */
+.commandes-entete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.commandes-entete__titre {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.commandes-entete h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.badge-total {
+  background: var(--c-border);
+  color: var(--c-texte-doux);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.btn-actualiser {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  color: var(--c-texte);
+  padding: 8px 16px;
+  border-radius: var(--rayon);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-actualiser:hover:not(:disabled) {
+  background: var(--c-bg);
+  border-color: #c5c2bb;
+}
+
+.btn-actualiser:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Filtres ───────────────────────────────────────────────── */
+.commandes-filtres {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.filtre-groupe {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.filtre-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-texte-doux);
+}
+
+.filtre-input,
+.filtre-select {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--rayon);
+  background: var(--c-surface);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  color: var(--c-texte);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.filtre-input { min-width: 240px; }
+.filtre-select { min-width: 200px; cursor: pointer; }
+
+.filtre-input:focus,
+.filtre-select:focus {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 168, 0.12);
+}
+
+/* ─── Contenu principal ─────────────────────────────────────── */
+.commandes-contenu {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--rayon);
+  box-shadow: var(--ombre);
+  overflow: hidden;
+}
+
+/* ─── États vide / erreur / chargement ──────────────────────── */
+.etat-chargement,
+.etat-erreur,
+.etat-vide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 24px;
+  text-align: center;
+  gap: 12px;
+}
+
+/* Spinner */
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--c-border);
+  border-top-color: var(--c-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.etat-chargement p {
+  color: var(--c-texte-doux);
+  font-size: 14px;
+  margin: 0;
+}
+
+.etat-erreur {
+  flex-direction: row;
+  gap: 16px;
+  text-align: left;
+  background: #fef2f2;
+  padding: 24px;
+}
+
+.etat-erreur__icone {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.etat-erreur strong { display: block; margin-bottom: 4px; }
+.etat-erreur p { margin: 0 0 12px; color: var(--c-texte-doux); font-size: 13px; }
+
+.btn-reessayer {
+  background: var(--c-rouge-bg);
+  border: 1px solid #fca5a5;
+  color: var(--c-rouge);
+  padding: 6px 14px;
+  border-radius: var(--rayon);
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.etat-vide__icone { font-size: 36px; }
+.etat-vide h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.etat-vide p  { margin: 0; color: var(--c-texte-doux); font-size: 14px; max-width: 320px; }
+
+/* ─── Tableau ───────────────────────────────────────────────── */
+.tableau-wrapper {
+  overflow-x: auto;
+}
+
+.tableau-commandes {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+/* En-tête du tableau */
+.tableau-commandes thead tr {
+  background: #faf9f7;
+  border-bottom: 2px solid var(--c-border);
+}
+
+.tableau-commandes th {
+  padding: 11px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-texte-doux);
+  white-space: nowrap;
+}
+
+/* Lignes */
+.tableau-commandes tbody tr {
+  border-bottom: 1px solid var(--c-border);
+  transition: background 0.1s;
+}
+
+.tableau-commandes tbody tr:last-child {
+  border-bottom: none;
+}
+
+.tableau-commandes tbody tr:hover {
+  background: #faf9f7;
+}
+
+.tableau-commandes td {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+
+/* Ligne en cours de mise à jour */
+.ligne-commande--maj {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* ─── Cellules spécifiques ──────────────────────────────────── */
+
+/* ID */
+.id-commande {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-texte-doux);
+}
+
+/* Référence */
+.ref {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--c-texte);
+  font-weight: 500;
+}
+
+/* Client */
+.client-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.client-nom {
+  font-weight: 500;
+}
+
+.client-email {
+  font-size: 11px;
+  color: var(--c-texte-doux);
+}
+
+/* Montant */
+.montant {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ─── Badges de statut ──────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.badge--vert   { color: var(--c-vert);   background: var(--c-vert-bg);   }
+.badge--rouge  { color: var(--c-rouge);  background: var(--c-rouge-bg);  }
+.badge--orange { color: var(--c-orange); background: var(--c-orange-bg); }
+.badge--bleu   { color: var(--c-bleu);   background: var(--c-bleu-bg);   }
+.badge--gris   { color: var(--c-gris);   background: var(--c-gris-bg);   }
+
+/* ─── Select modification statut ───────────────────────────── */
+.select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-statut {
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--rayon);
+  background: var(--c-bg);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  color: var(--c-texte);
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%236b6860' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  max-width: 200px;
+}
+
+.select-statut:focus {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 168, 0.12);
+}
+
+.select-statut:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Spinner inline (dans la cellule action) */
+.spinner-inline {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--c-border);
+  border-top-color: var(--c-accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ─── Pagination ────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid var(--c-border);
+  background: #faf9f7;
+}
+
+.pagination__btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  border-radius: var(--rayon);
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pagination__btn:hover:not(:disabled) {
+  background: var(--c-bg);
+  border-color: #c5c2bb;
+}
+
+.pagination__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pagination__info {
+  font-size: 13px;
+  color: var(--c-texte-doux);
+  padding: 0 8px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ─── Toast notification ────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-radius: var(--rayon);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 1000;
+}
+
+.toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast--succes {
+  background: var(--c-vert-bg);
+  color: var(--c-vert);
+  border: 1px solid #bbf7d0;
+}
+
+.toast--erreur {
+  background: var(--c-rouge-bg);
+  color: var(--c-rouge);
+  border: 1px solid #fca5a5;
+}
+
+.toast__icone {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* ─── Responsive ────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .commandes-entete h2 { font-size: 18px; }
+  .filtre-input         { min-width: 100%; }
+  .filtre-select        { min-width: 100%; }
+  .commandes-filtres    { flex-direction: column; }
+
+  /* Masquer colonnes moins importantes sur mobile */
+  .col-ref,
+  .col-email { display: none; }
+
+  .tableau-commandes th,
+  .tableau-commandes td { padding: 10px; }
+}

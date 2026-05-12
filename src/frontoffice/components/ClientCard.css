@@ -1,0 +1,257 @@
+/**
+ * ClientCard.css
+ * ─────────────────────────────────────────────────────────────
+ * Carte client avec layout sophistiqué
+ * ─────────────────────────────────────────────────────────────
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --surface: #ffffff;
+  --border: #e2e0db;
+  --text: #1a1814;
+  --muted: #6b6860;
+  --accent: #2563a8;
+  --accent-light: #dbeafe;
+  --radius: 6px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-hover: 0 4px 12px rgba(37, 99, 168, 0.08);
+}
+
+.client-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.client-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: transparent;
+  transition: background 0.2s ease;
+}
+
+.client-card:hover {
+  border-color: #cfcac2;
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
+}
+
+.client-card:hover::before {
+  background: var(--accent);
+}
+
+.client-card--selected {
+  border: 1.5px solid var(--accent);
+  background: linear-gradient(135deg, rgba(37, 99, 168, 0.02) 0%, rgba(37, 99, 168, 0.01) 100%);
+  box-shadow: 0 2px 8px rgba(37, 99, 168, 0.12);
+}
+
+.client-card--selected::before {
+  background: var(--accent);
+}
+
+/* Avatar */
+.client-card__avatar {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.3);
+}
+
+.client-card__initials {
+  color: white;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+/* Badge actif */
+.client-card__badge-active {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  background: #22c55e;
+  border: 2px solid white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Section principale */
+.client-card__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.client-card__name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-card__email {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-card__company {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
+
+/* Section meta */
+.client-card__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: max-content;
+}
+
+.client-card__date {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.client-card__status {
+  font-size: 10px;
+  transition: all 0.2s ease;
+}
+
+.client-card__status.active {
+  color: #22c55e;
+}
+
+.client-card__status.inactive {
+  color: #ef4444;
+}
+
+/* Bouton action */
+.client-card__btn {
+  padding: 8px 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  line-height: 1;
+}
+
+.client-card__btn:hover {
+  background: #1e4f8a;
+  transform: translateX(2px);
+  box-shadow: 0 2px 6px rgba(37, 99, 168, 0.3);
+}
+
+.client-card__btn:active {
+  transform: translateX(2px) scale(0.95);
+}
+
+/* Variante anonyme */
+.client-card--anonymous .client-card__avatar {
+  background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+  box-shadow: 0 2px 6px rgba(127, 140, 141, 0.2);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .client-card {
+    padding: 12px 14px;
+    gap: 12px;
+  }
+
+  .client-card__avatar {
+    width: 44px;
+    height: 44px;
+  }
+
+  .client-card__initials {
+    font-size: 1rem;
+  }
+
+  .client-card__date {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .client-card {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .client-card__avatar {
+    width: 40px;
+    height: 40px;
+  }
+
+  .client-card__initials {
+    font-size: 0.9rem;
+  }
+
+  .client-card__name {
+    font-size: 13px;
+  }
+
+  .client-card__email {
+    font-size: 11px;
+  }
+
+  .client-card__company {
+    display: none;
+  }
+
+  .client-card__btn {
+    padding: 6px 8px;
+    min-width: 32px;
+    min-height: 32px;
+    font-size: 14px;
+  }
+}
