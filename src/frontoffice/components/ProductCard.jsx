@@ -9,9 +9,7 @@ export const ProductCard = ({ product }) => {
   useEffect(() => {
     getProductImages(product.id)
         .then((imgs) => {
-          console.log("Images produit", product.id, ":", imgs);
           if (imgs[0]) {
-            console.log("Structure image[0]:", imgs[0]); // Pour voir ce qu'il y a dedans
           }
           setImages(imgs);
         })

@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { getCustomers } from '../services/customersService';
 import ClientCard from '../components/ClientCard';
 import LoginModal from '../components/LoginModal';
-import { useFrontofficeClient } from '../hooks/useFrontofficeClient';
+import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
 import './ClientsPage.css';
 
 const ClientsPage = () => {

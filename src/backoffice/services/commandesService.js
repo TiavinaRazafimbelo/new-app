@@ -106,6 +106,8 @@ export async function getStatutsCommande() {
   }));
 }
 
+
+
 // ─── STATUTS MODIFIABLES (pour le <select> de modification) ──
 
 /**
@@ -242,9 +244,14 @@ export async function updateStatutCommande(id, statutId) {
   });
 
   const text = await response.text();
-  console.log('ORDER HISTORY RESPONSE:', text);
   if (!response.ok) throw new Error(text);
   return { success: true };
+}
+
+async function getNomStatutsCommandeById(idCommande) {
+  const data = await prestaFetch(`/order_states/${idCommande}?display=full`);
+  return (val(data.order_state?.[0].name));
+  // return val(data.order_state?.[0].name) || '';
 }
 
 // ─── COMMANDES PAR DATE (tableau de bord) ─────────────────────
@@ -259,6 +266,7 @@ export async function getCommandesParDate(date) {
       id:            val(c.id),
       reference:     val(c.reference),
       current_state: val(c.current_state),
+      current_state_name: getNomStatutsCommandeById(val(c.current_state)), // à remplir ensuite
       date_add:      val(c.date_add),
       total_paid:    parseFloat(val(c.total_paid) || 0),
     }))

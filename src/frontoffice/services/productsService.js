@@ -284,7 +284,6 @@ export async function getProductById(id) {
   // Produit complet
   const data = await prestaFetch(`/products/${id}?display=full`);
 
-  // console.log("DETAIL PRODUIT =", data);
 
   const product = data.product?.[0];
   const stock = await getProductStock(id);
@@ -366,7 +365,6 @@ return {
     })
   );
 
-  console.log("🏄 Combinaisons enrichies avec attributs :", combinations);
 
   // ─────────────────────────────────────
   // NOM / DESCRIPTION
@@ -457,7 +455,6 @@ export async function getProductImages(productId) {
       `/products/${productId}?display=full`
     );
 
-    // console.log("PRODUCT DATA =", data);
 
     const images =
       data.product?.[0]?.associations?.images?.image || [];
@@ -590,21 +587,16 @@ async function enrichirCombinaison(combiId) {
       return {};
     }
     
-    console.log(`[enrichirCombinaison] Combinaison complète #${combiId}:`, combi);
     
     const optionIds = extraireOptionsCombinaison(combi);
-    console.log("[enrichirCombinaison] optionIds:", optionIds);
     
     const attributes = {};
     
     for (const optionId of optionIds) {
-      console.log(`[enrichirCombinaison] Fetching optionId ${optionId}...`);
       const optionData = await getOptionValueName(optionId);
-      console.log(`[enrichirCombinaison] optionData pour ${optionId}:`, optionData);
       
       if (optionData) {
         const groupName = await getAttributeGroupName(optionData.id_attribute_group);
-        console.log(`[enrichirCombinaison] groupName pour groupe ${optionData.id_attribute_group}:`, groupName);
         
         if (groupName) {
           attributes[groupName] = optionData.name;
@@ -612,7 +604,6 @@ async function enrichirCombinaison(combiId) {
       }
     }
     
-    console.log("[enrichirCombinaison] final attributes:", attributes);
     return attributes;
   } catch (err) {
     console.warn(`[enrichirCombinaison] Erreur combinaison ${combiId}:`, err.message);

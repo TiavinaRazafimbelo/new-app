@@ -30,31 +30,36 @@
 .cart-button {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: var(--accent);
-  color: white;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #f0f0f0;
+  color: #333;
   text-decoration: none;
-  border-radius: var(--radius);
+  border-radius: 6px;
   font-weight: 500;
-  font-size: 14px;
+  font-size: 13px;
   transition: all 0.2s ease;
-  border: none;
+  border: 1px solid #ddd;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .cart-button:hover {
-  background: #2c7eaee2;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(161, 196, 237, 0.532);
+  background: #e8e8e8;
+  border-color: #999;
+  transform: none;
+}
+
+.cart-button:active {
+  transform: translateY(0);
 }
 
 .cart-icon {
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .cart-label {
-  font-size: 14px;
+  font-size: 13px;
 }
 
 /* ─── ÉTAT DE CONNEXION ───────────────────────────── */

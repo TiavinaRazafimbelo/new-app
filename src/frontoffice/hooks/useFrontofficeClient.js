@@ -27,7 +27,10 @@ export const useFrontofficeClient = () => {
       } catch (err) {
         console.error('Erreur parsing session client:', err);
         sessionStorage.removeItem('frontoffice_client');
+        connectAnonymous();
       }
+    } else {
+      connectAnonymous();
     }
   }, []);
 
@@ -44,11 +47,10 @@ export const useFrontofficeClient = () => {
   /**
    * Déconnecter le client
    */
-  const logout = () => {
-    sessionStorage.removeItem('frontoffice_client');
-    setClient(null);
-    setIsConnected(false);
-  };
+const logout = () => {
+  sessionStorage.removeItem('frontoffice_client');
+  connectAnonymous();
+};
 
   /**
    * Mettre à jour les infos du client
@@ -59,12 +61,31 @@ export const useFrontofficeClient = () => {
     setClient(updated);
   };
 
+
+  const connectAnonymous = () => {
+    const anonymousClient = {
+      anonymous: true,
+      authenticated: false,
+      loginTime: new Date().toISOString(),
+    };
+
+    sessionStorage.setItem(
+      'frontoffice_client',
+      JSON.stringify(anonymousClient)
+    );
+
+    setClient(anonymousClient);
+    setIsConnected(true);
+  };
+
+
   return {
     client,
     isConnected,
     connect,
     logout,
     update,
+    connectAnonymous
   };
 };
 

@@ -70,13 +70,13 @@ function CarteStats({ icone, libelle, valeur, sous, couleur = 'neutre' }) {
 /**
  * Badge coloré selon l'ID de statut.
  */
-function BadgeStatutId({ statutId }) {
+function BadgeStatutId({ statutId, statutName }) {
   const MAP = {
     10: { label: 'Dans le panier',    classe: 'gris'  },
     2:  { label: 'Paiement effectué', classe: 'vert'  },
     6:  { label: 'Annulé',            classe: 'rouge' },
   };
-  const info = MAP[statutId] || { label: `Statut ${statutId}`, classe: 'gris' };
+  const info = MAP[statutId] || { label: statutName, classe: 'gris' };
   return <span className={`badge badge--${info.classe}`}>{info.label}</span>;
 }
 
@@ -119,7 +119,7 @@ function TableauCommandes({ commandes }) {
                   <td><span className="mono">#{c.id}</span></td>
                   <td><span className="mono">{c.reference || '—'}</span></td>
                   <td>{dateEnFR(c.date_add)}</td>
-                  <td><BadgeStatutId statutId={Number(c.current_state)} /></td>
+                  <td><BadgeStatutId statutId={Number(c.current_state)} statutName={c.current_state_name} /></td>
                   <td className="col-droite">
                     {comptabilisee ? (
                       // Montant normal : commande payée

@@ -23,8 +23,11 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { getProductById } from '../services/productsService';
+import { useCart } from '../contexts/CartContext';
+import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
+import TopBar from '../components/TopBar';
 import './ProductDetailPage.css';
 
 // ─── Sous-composants ──────────────────────────────────────────
@@ -221,12 +224,17 @@ function SelecteurCombinaison({ combinations, prixBase, onSelect }) {
  */
 const ProductDetailPage = () => {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { addToCart } = useCart();
+  const { client } = useFrontofficeClient();
 
   const [produit,        setProduit]        = useState(null);
   const [chargement,     setChargement]     = useState(true);
   const [erreur,         setErreur]         = useState(null);
   const [combiSelectee,  setCombiSelectee]  = useState(null);
   const [descLongue,     setDescLongue]     = useState(false);
+  const [quantite,       setQuantite]       = useState(1); // ← Quantité à ajouter
+  const [messageAjout,   setMessageAjout]   = useState(null); // ← Message de confirmation
 
   useEffect(() => {
     let annule = false;
@@ -247,13 +255,61 @@ const ProductDetailPage = () => {
     return () => { annule = true; };
   }, [id]);
 
-  console.log('Produit chargé :', produit);
-  console.log('Combinaison sélectionnée :', combiSelectee);
 
   // Prix affiché : prix de base + prix additionnel de la combinaison
   const prixAffiche = produit
     ? (produit.price + (combiSelectee?.price || 0)).toFixed(2)
     : '—';
+
+  /**
+   * Ajoute le produit au panier
+   * Vérifie : client connecté, quantité > 0, stock suffisant
+   */
+  const handleAddToCart = () => {
+    // Vérifier que le client n'est pas anonyme
+    if (client?.anonymous) {
+      navigate('/clients');
+      return;
+    }
+
+    // Stock disponible
+    const stockDispo = combiSelectee ? combiSelectee.quantity : produit.quantity;
+
+    if (quantite <= 0 || quantite > stockDispo) {
+      setMessageAjout({
+        type: 'error',
+        text: `Quantité invalide. Stock disponible : ${stockDispo}`,
+      });
+      setTimeout(() => setMessageAjout(null), 3000);
+      return;
+    }
+
+    // Construire l'article
+    const article = {
+      productId: produit.id,
+      combinationId: combiSelectee?.id || 0,
+      quantity: quantite,
+      name: produit.name,
+      image: produit.images?.[0]?.url || null,
+      price: parseFloat(prixAffiche),
+      stock: stockDispo,
+    };
+
+    // Ajouter au panier
+    addToCart(article);
+
+    // Afficher confirmation
+    setMessageAjout({
+      type: 'success',
+      text: `✓ ${produit.name} ajouté au panier (qty: ${quantite})`,
+    });
+
+    // Réinitialiser quantité
+    setQuantite(1);
+
+    // Masquer le message après 3 secondes
+    setTimeout(() => setMessageAjout(null), 3000);
+  };
 
   // ── États de chargement ─────────────────────────────────────
   if (chargement) {
@@ -284,7 +340,9 @@ const ProductDetailPage = () => {
 
   // ── Rendu principal ─────────────────────────────────────────
   return (
-    <div className="detail-page">
+    <>
+      <TopBar />
+      <div className="detail-page">
 
       {/* ─── Fil d'Ariane ──────────────────────────────────── */}
       <nav className="breadcrumb">
@@ -356,18 +414,50 @@ const ProductDetailPage = () => {
             onSelect={setCombiSelectee}
           />
 
-          {/* Bouton Ajouter au panier */}
-          <button
-            className="btn-panier"
-            disabled={
-              (combiSelectee
-                ? combiSelectee.quantity
-                : produit.quantity) === 0
-            }
-          >
-            <span className="btn-panier__icone">🛒</span>
-            Ajouter au panier
-          </button>
+          {/* Section Quantité + Bouton Ajouter */}
+          <div className="detail-ajouter-panier">
+            <div className="quantite-group">
+              <label htmlFor="quantite-input">Quantité :</label>
+              <input
+                id="quantite-input"
+                type="number"
+                min="1"
+                max={combiSelectee ? combiSelectee.quantity : produit.quantity}
+                value={quantite}
+                onChange={(e) => setQuantite(Math.max(1, parseInt(e.target.value) || 1))}
+                className="quantite-input"
+              />
+            </div>
+
+            {/* Bouton Ajouter au panier */}
+            <button
+              className="btn-panier"
+              onClick={handleAddToCart}
+              disabled={
+                (combiSelectee
+                  ? combiSelectee.quantity
+                  : produit.quantity) === 0
+              }
+            >
+              <span className="btn-panier__icone">🛒</span>
+              Ajouter au panier
+            </button>
+
+            {/* Message de confirmation / erreur */}
+            {messageAjout && (
+              <div className={`message-ajout message-ajout--${messageAjout.type}`}>
+                {messageAjout.text}
+                {messageAjout.type === 'success' && (
+                  <button
+                    className="btn-aller-panier"
+                    onClick={() => navigate('/cart')}
+                  >
+                    → Voir mon panier
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Informations complémentaires */}
           <div className="detail-meta">
@@ -428,6 +518,7 @@ const ProductDetailPage = () => {
       </div>
 
     </div>
+    </>
   );
 };
 
