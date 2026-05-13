@@ -9,6 +9,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider }    from './contexts/AuthContext';
 import ProtectedRoute      from './backoffice/components/ProtectedRoute';
 import LoginPage           from './backoffice/pages/LoginPage';
+import DashboardPage           from './backoffice/pages/DashboardPage';
 import ImportPage          from './backoffice/pages/ImportPage';
 import CommandesPage       from './backoffice/pages/CommandesPage';
 import ResetDataPage       from './backoffice/pages/ResetDataPage';
@@ -43,6 +44,7 @@ function App() {
             }
           >
             <Route path="import"    element={<ImportPage />} />
+            <Route path="dashboard" element={<DashboardPage />} />
             <Route path="commandes" element={<CommandesPage />} />
             <Route path="reset"     element={<ResetDataPage />} />
             {/* Redirection par défaut backoffice */}

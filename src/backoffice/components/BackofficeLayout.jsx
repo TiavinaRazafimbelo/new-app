@@ -1,12 +1,31 @@
 /**
- * Layout du Backoffice
- * Contient la navigation et la structure commune à toutes les pages du backoffice
+ * BackofficeLayout.jsx
+ * ─────────────────────────────────────────────────────────────
+ * Layout du Backoffice.
+ * Contient la navigation latérale et la structure commune.
+ *
+ * MODIFICATION v2 :
+ *   - Ajout du lien "Tableau de bord" en haut de la sidebar
+ *   - Utilisation de NavLink (react-router-dom) à la place de <a>
+ *     pour mettre en surbrillance automatiquement la page active
+ * ─────────────────────────────────────────────────────────────
  */
 
 import React from 'react';
-import { useNavigate, Outlet } from 'react-router-dom';
+import { useNavigate, Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import './BackofficeLayout.css';
+
+/**
+ * Liens de navigation de la sidebar.
+ * On les déclare ici pour faciliter l'ajout de nouveaux liens.
+ */
+const NAV_LIENS = [
+  { path: '/backoffice/dashboard', label: 'Tableau de bord', icone: '' },
+  { path: '/backoffice/commandes', label: 'Commandes',        icone: '' },
+  { path: '/backoffice/import',    label: 'Import',           icone: '' },
+  { path: '/backoffice/reset',     label: 'Reset Data',       icone: '' },
+];
 
 export const BackofficeLayout = () => {
   const navigate = useNavigate();
@@ -19,7 +38,8 @@ export const BackofficeLayout = () => {
 
   return (
     <div className="backoffice-layout">
-      {/* Navigation Header */}
+
+      {/* ─── Header ──────────────────────────────────────── */}
       <header className="backoffice-header">
         <div className="header-left">
           <h1>PrestaShop Admin</h1>
@@ -33,54 +53,38 @@ export const BackofficeLayout = () => {
       </header>
 
       <div className="backoffice-container">
-        {/* Sidebar Navigation */}
+
+        {/* ─── Sidebar ─────────────────────────────────────── */}
         <aside className="backoffice-sidebar">
           <nav className="sidebar-nav">
             <ul>
-              <li>
-                <a 
-                  href="#" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate('/backoffice/import');
-                  }}
-                  className="nav-link"
-                >
-                  Import
-                </a>
-              </li>
-              <li>
-                <a 
-                  href="#" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate('/backoffice/commandes');
-                  }}
-                  className="nav-link"
-                >
-                  Commandes
-                </a>
-              </li>
-              <li>
-                <a 
-                  href="#" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate('/backoffice/reset');
-                  }}
-                  className="nav-link"
-                >
-                  Reset Data
-                </a>
-              </li>
+              {NAV_LIENS.map(({ path, label, icone }) => (
+                <li key={path}>
+                  {/*
+                   * NavLink ajoute automatiquement la classe "active"
+                   * quand l'URL correspond — pratique pour le style CSS
+                   * de la page sélectionnée.
+                   */}
+                  <NavLink
+                    to={path}
+                    className={({ isActive }) =>
+                      `nav-link ${isActive ? 'nav-link--active' : ''}`
+                    }
+                  >
+                    <span className="nav-link__icone">{icone}</span>
+                    {label}
+                  </NavLink>
+                </li>
+              ))}
             </ul>
           </nav>
         </aside>
 
-        {/* Main Content */}
+        {/* ─── Contenu principal ───────────────────────────── */}
         <main className="backoffice-content">
           <Outlet />
         </main>
+
       </div>
     </div>
   );
