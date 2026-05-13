@@ -42,6 +42,12 @@ const TopBar = () => {
                   <>Connecté en tant que <strong>{client.firstName} {client.lastName}</strong></>
                 )}
               </span>
+              {/* Si anonyme : afficher les deux boutons (Se connecter + Déconnexion) */}
+              {client.anonymous && (
+                <Link to="/clients" className="btn-login">
+                  Se connecter
+                </Link>
+              )}
               <button className="btn-logout" onClick={handleLogout}>
                 Déconnexion
               </button>

@@ -7,6 +7,7 @@
  */
 
 import { createContext, useContext, useState, useEffect } from 'react';
+import { getOrCreateAnonSessionId, clearAnonSession } from '../utils/anonSessionUtil';
 
 const FrontofficeClientContext = createContext();
 
@@ -56,21 +57,35 @@ export const FrontofficeClientProvider = ({ children }) => {
   /**
    * Connecter un client
    * @param {Object} clientData - Données du client
+   * ⚠️ Si c'est un client anonyme sans anonSessionId, on en génère un
    */
   const connect = (clientData) => {
-    console.log('[FrontofficeClientContext] Connexion client :', clientData);
-    sessionStorage.setItem('frontoffice_client', JSON.stringify(clientData));
-    setClient(clientData);
+    let finalClientData = clientData;
+    
+    // Si c'est un client anonyme sans anonSessionId, générer un UUID
+    if (clientData.anonymous && !clientData.anonSessionId) {
+      finalClientData = {
+        ...clientData,
+        anonSessionId: getOrCreateAnonSessionId(),
+      };
+      console.log('[FrontofficeClientContext] Client anonyme corrigé avec anonSessionId :', finalClientData.anonSessionId);
+    }
+    
+    console.log('[FrontofficeClientContext] Connexion client :', finalClientData);
+    sessionStorage.setItem('frontoffice_client', JSON.stringify(finalClientData));
+    setClient(finalClientData);
     setIsConnected(true);
   };
 
   /**
    * Déconnecter le client
+   * ⚠️ Pour un client anonyme : supprime l'UUID et génère un nouveau panier
    */
   const logout = () => {
     console.log('[FrontofficeClientContext] Déconnexion');
     sessionStorage.removeItem('frontoffice_client');
-    connectAnonymous();
+    clearAnonSession(); // ← Supprime l'UUID pour créer un nouveau à la reconnexion
+    connectAnonymous(); // ← Génère un nouvel UUID + nouveau panier
   };
 
   /**
@@ -86,13 +101,15 @@ export const FrontofficeClientProvider = ({ children }) => {
    * Connecter en tant qu'anonyme
    */
   const connectAnonymous = () => {
+    const anonSessionId = getOrCreateAnonSessionId();
     const anonymousClient = {
       anonymous: true,
       authenticated: false,
+      anonSessionId, // UUID unique et persistant
       loginTime: new Date().toISOString(),
     };
 
-    console.log('[FrontofficeClientContext] Connexion anonyme');
+    console.log('[FrontofficeClientContext] Connexion anonyme avec session :', anonSessionId);
     sessionStorage.setItem('frontoffice_client', JSON.stringify(anonymousClient));
     setClient(anonymousClient);
     setIsConnected(true);

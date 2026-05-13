@@ -13,7 +13,7 @@ import './CartPage.css';
 
 export default function CartPage() {
   const navigate = useNavigate();
-  const { cart, removeFromCart, updateQuantity, getTotal } = useCart();
+  const { cart, removeFromCart, updateQuantity, getTotal, clearCart } = useCart();
   const { client } = useFrontofficeClient(); // client = { anonymous: true/false, ... }
 
   // Calcule sous-total et total
@@ -52,6 +52,15 @@ export default function CartPage() {
     // TODO : créer OrderPage
     console.log('TODO : Créer la page de commande');
     navigate('/order');
+  };
+
+  /**
+   * Vide complètement le panier
+   */
+  const handleClearCart = () => {
+    if (window.confirm('Êtes-vous sûr de vouloir vider votre panier ?')) {
+      clearCart();
+    }
   };
 
   // ─── RENDU ─────────────────────────────────────────
@@ -159,6 +168,12 @@ export default function CartPage() {
                 onClick={() => navigate('/products')}
               >
                 ← Continuer les achats
+              </button>
+              <button
+                className="btn btn-danger btn-small"
+                onClick={handleClearCart}
+              >
+                Vider
               </button>
             </div>
           </div>

@@ -263,15 +263,10 @@ const ProductDetailPage = () => {
 
   /**
    * Ajoute le produit au panier
-   * Vérifie : client connecté, quantité > 0, stock suffisant
+   * Vérifie : quantité > 0, stock suffisant
+   * Permet aussi les clients anonymes
    */
   const handleAddToCart = () => {
-    // Vérifier que le client n'est pas anonyme
-    if (client?.anonymous) {
-      navigate('/clients');
-      return;
-    }
-
     // Stock disponible
     const stockDispo = combiSelectee ? combiSelectee.quantity : produit.quantity;
 

@@ -153,10 +153,10 @@
   text-align: center;
 }
 
-.btn-small {
+/* .btn-small {
   padding: 6px 12px !important;
   font-size: 0.9rem;
-}
+} */
 
 /* Barre d'actions */
 .cart-actions-bar {
@@ -165,6 +165,12 @@
   border-top: 1px solid #e0e0e0;
   display: flex;
   gap: 10px;
+  align-items: center;
+}
+
+.cart-actions-bar .btn-small {
+  width: 100px;
+  /* flex: 0 0 auto; */
 }
 
 /* ─── RÉSUMÉ (ASIDE) ──────────────────────────────────── */

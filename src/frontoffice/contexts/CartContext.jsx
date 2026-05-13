@@ -14,6 +14,7 @@ import {
   clearCart as clearCartService,
   getCartTotal,
   getCartCount,
+  mergeAnonymousCartToAuthenticatedCart,
 } from '../services/cartService';
 import { useFrontofficeClient } from './FrontofficeClientContext';
 
@@ -34,14 +35,14 @@ export const CartProvider = ({ children }) => {
   const [currentClientId, setCurrentClientId] = useState(() => {
     // Initialiser avec le clientId du client actuel
     if (!client) return 'anonymous';
-    if (client.anonymous) return 'anonymous';
+    if (client.anonymous) return `anon_${client.anonSessionId}` || 'anonymous';
     return client.id || 'anonymous';
   });
 
-  // Génère l'ID du client (numérique ou 'anonymous')
+  // Génère l'ID du client (utilise l'UUID pour les anonymes)
   const getClientId = () => {
     if (!client) return 'anonymous';
-    if (client.anonymous) return 'anonymous';
+    if (client.anonymous) return `anon_${client.anonSessionId}` || 'anonymous';
     return client.id || 'anonymous';
   };
 
@@ -112,6 +113,26 @@ export const CartProvider = ({ children }) => {
     return getCartTotal(currentClientId);
   };
 
+  /**
+   * Fusionne le panier anonyme avec le panier du client authentifié
+   * À appeler quand un anonyme se connecte
+   * 
+   * @param {string|number} anonClientId - ID du client anonyme (ex: "anon_uuid")
+   * @param {string|number} authenticatedClientId - ID du client authentifié (ex: 9)
+   */
+  const mergeAnonToAuthCart = (anonClientId, authenticatedClientId) => {
+    console.log(
+      `[CartContext] Fusion panier anonyme (${anonClientId}) → authentifié (${authenticatedClientId})`
+    );
+    const mergedCart = mergeAnonymousCartToAuthenticatedCart(anonClientId, authenticatedClientId);
+    
+    // Mettre à jour le panier local et le currentClientId
+    setCurrentClientId(authenticatedClientId);
+    setCart(mergedCart);
+    
+    console.log('[CartContext] Fusion terminée, panier mis à jour');
+  };
+
   const value = {
     cart,
     cartCount,
@@ -121,6 +142,7 @@ export const CartProvider = ({ children }) => {
     clearCart,
     getTotal,
     loadCart,
+    mergeAnonToAuthCart,
   };
 
   return (

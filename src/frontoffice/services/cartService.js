@@ -6,7 +6,7 @@
  * 
  * Clé localStorage : cart_${clientId}
  * Exemple :
- *   - Client anonyme : cart_anonymous
+ *   - Client anonyme : cart_anon_${uuid} (ex: cart_anon_a1b2c3d4-...)
  *   - Client ID 42 : cart_42
  */
 
@@ -177,4 +177,59 @@ export const getCartCount = (clientId) => {
  */
 export const getCartLineCount = (clientId) => {
   return getCart(clientId).length;
+};
+
+/**
+ * Fusionne le panier anonyme avec le panier d'un client authentifié
+ * Les articles du panier anonyme sont ajoutés au panier du client
+ * Si un article existe dans les deux → les quantités s'ajoutent
+ * 
+ * @param {string|number} anonClientId - ID du client anonyme (ex: "anon_uuid-...")
+ * @param {string|number} authenticatedClientId - ID du client authentifié (ex: client.id)
+ * @returns {Array} Le panier fusionné du client authentifié
+ */
+export const mergeAnonymousCartToAuthenticatedCart = (anonClientId, authenticatedClientId) => {
+  const anonCart = getCart(anonClientId);
+  const authCart = getCart(authenticatedClientId);
+  
+  if (anonCart.length === 0) {
+    console.log('[cartService] Panier anonyme vide, rien à fusionner');
+    return authCart;
+  }
+  
+  let mergedCart = [...authCart];
+  
+  // Pour chaque article du panier anonyme
+  anonCart.forEach((anonItem) => {
+    // Cherche si ce même article existe dans le panier authentifié
+    const existingIndex = mergedCart.findIndex(
+      (authItem) =>
+        authItem.productId === anonItem.productId &&
+        authItem.combinationId === anonItem.combinationId
+    );
+    
+    if (existingIndex !== -1) {
+      // Article existe → additionner les quantités
+      console.log(
+        `[cartService] Fusion : quantité ${mergedCart[existingIndex].quantity} + ${anonItem.quantity}`
+      );
+      mergedCart[existingIndex].quantity += anonItem.quantity;
+    } else {
+      // Article n'existe pas → l'ajouter
+      mergedCart.push(anonItem);
+    }
+  });
+  
+  // Sauvegarder le panier fusionné pour le client authentifié
+  saveCart(authenticatedClientId, mergedCart);
+  
+  console.log(
+    `[cartService] Fusion terminée : ${anonCart.length} articles anonymes → ${mergedCart.length} articles total`
+  );
+  
+  // ⚠️ Supprimer le panier anonyme (optionnel, pour éviter la pollution)
+  localStorage.removeItem(getStorageKey(anonClientId));
+  console.log(`[cartService] Panier anonyme supprimé (${anonClientId})`);
+  
+  return mergedCart;
 };

@@ -4,9 +4,13 @@
  * Hook pour gérer la session client du frontoffice
  * Permet d'accéder au client connecté depuis n'importe quel composant
  * ─────────────────────────────────────────────────────────────
+ * 
+ * ⚠️ IMPORTANT : Préférer le contexte FrontofficeClientContext
+ * ce fichier est gardé pour compatibilité
  */
 
 import { useState, useEffect } from 'react';
+import { getOrCreateAnonSessionId } from '../utils/anonSessionUtil';
 
 /**
  * Hook pour récupérer le client actuellement connecté
@@ -63,9 +67,11 @@ const logout = () => {
 
 
   const connectAnonymous = () => {
+    const anonSessionId = getOrCreateAnonSessionId();
     const anonymousClient = {
       anonymous: true,
       authenticated: false,
+      anonSessionId, // UUID unique et persistant
       loginTime: new Date().toISOString(),
     };
 

@@ -9,6 +9,7 @@ import { getCustomers } from '../services/customersService';
 import ClientCard from '../components/ClientCard';
 import LoginModal from '../components/LoginModal';
 import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
+import { useCart } from '../contexts/CartContext';
 import './ClientsPage.css';
 
 const ClientsPage = () => {
@@ -20,7 +21,8 @@ const ClientsPage = () => {
   const [loginModalClient, setLoginModalClient] = useState(null);
 
   const navigate = useNavigate();
-  const { connect } = useFrontofficeClient();
+  const { connect, connectAnonymous, client: currentClient } = useFrontofficeClient();
+  const { mergeAnonToAuthCart } = useCart();
 
   useEffect(() => {
     loadClients();
@@ -53,9 +55,18 @@ const ClientsPage = () => {
 
   /**
    * Callback du modal : client authentifié
+   * Fusionne le panier anonyme avant de se connecter
    */
   const handleLoginSuccess = (authenticatedCustomer) => {
     setIsLoginModalOpen(false);
+    
+    // Si l'utilisateur était anonyme → fusionner le panier
+    if (currentClient?.anonymous && currentClient?.anonSessionId) {
+      const anonClientId = `anon_${currentClient.anonSessionId}`;
+      console.log('[ClientsPage] Fusion panier avant connexion');
+      mergeAnonToAuthCart(anonClientId, authenticatedCustomer.id);
+    }
+    
     connect(authenticatedCustomer);
     navigate('/products');
   };
@@ -64,7 +75,7 @@ const ClientsPage = () => {
    * Accès anonyme
    */
   const handleAnonymousAccess = () => {
-    connect({ id: null, anonymous: true, loginTime: new Date().toISOString() });
+    connectAnonymous();
     navigate('/products');
   };
 
