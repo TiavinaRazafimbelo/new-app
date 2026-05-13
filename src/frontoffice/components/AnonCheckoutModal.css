@@ -1,0 +1,149 @@
+/* AnonCheckoutModal.css */
+
+.anon-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.anon-modal {
+  background: #fff;
+  border-radius: 12px;
+  padding: 2rem;
+  width: min(560px, 92vw);
+  position: relative;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+  animation: slideUp 0.2s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.anon-modal__close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #666;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.anon-modal__close:hover { background: #f0f0f0; }
+
+.anon-modal__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.anon-modal__subtitle {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+
+.anon-modal__options {
+  display: flex;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+@media (max-width: 480px) {
+  .anon-modal__options {
+    flex-direction: column;
+  }
+  .anon-modal__separator {
+    display: none;
+  }
+}
+
+.anon-modal__option {
+  flex: 1;
+  border: 2px solid #e5e5e5;
+  border-radius: 10px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  transition: border-color 0.15s;
+}
+
+.anon-modal__option--login:hover  { border-color: #2563eb; }
+.anon-modal__option--guest:hover  { border-color: #16a34a; }
+
+.anon-modal__option-icon {
+  font-size: 2rem;
+  line-height: 1;
+  margin-bottom: 0.25rem;
+}
+
+.anon-modal__option h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.anon-modal__option p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #666;
+  line-height: 1.4;
+  flex: 1;
+}
+
+.anon-modal__btn {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1.25rem;
+  border-radius: 6px;
+  border: none;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.anon-modal__btn:hover  { opacity: 0.88; transform: translateY(-1px); }
+.anon-modal__btn:active { transform: translateY(0); }
+
+.anon-modal__btn--primary {
+  background: #2563eb;
+  color: #fff;
+}
+
+.anon-modal__btn--secondary {
+  background: #16a34a;
+  color: #fff;
+}
+
+.anon-modal__separator {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  color: #999;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 0 0.25rem;
+}

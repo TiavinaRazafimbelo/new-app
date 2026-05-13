@@ -1,0 +1,242 @@
+/* OrdersPage.css */
+
+.orders-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.orders-breadcrumb {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 1.25rem;
+}
+.orders-breadcrumb a { color: #2563eb; text-decoration: none; }
+.orders-breadcrumb a:hover { text-decoration: underline; }
+
+.orders-title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #111;
+  margin-bottom: 1.5rem;
+}
+
+/* ─── États ──────────────────────────────────────────────── */
+
+.orders-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 3rem 0;
+  color: #666;
+}
+
+.spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 3px solid #e5e7eb;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.orders-erreur {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 8px;
+  padding: 1rem;
+  font-size: 0.9rem;
+}
+
+.orders-empty {
+  text-align: center;
+  padding: 3rem 0;
+  color: #6b7280;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* ─── Liste commandes ────────────────────────────────────── */
+
+.orders-count {
+  font-size: 0.85rem;
+  color: #6b7280;
+  margin-bottom: 0.75rem;
+}
+
+.orders-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ─── Carte commande ─────────────────────────────────────── */
+
+.carte-commande {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.carte-commande__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  transition: background 0.1s;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.carte-commande__header:hover { background: #f9fafb; }
+
+.carte-commande__infos {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.carte-commande__ref {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #111;
+}
+.carte-commande__ref em {
+  font-style: normal;
+  color: #6b7280;
+  font-weight: 400;
+}
+
+.carte-commande__date {
+  font-size: 0.82rem;
+  color: #9ca3af;
+}
+
+.carte-commande__droite {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.badge-etat {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  border: 1.5px solid;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.carte-commande__total {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #111;
+  white-space: nowrap;
+}
+
+.carte-commande__chevron {
+  font-size: 0.7rem;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+/* ─── Détail articles ────────────────────────────────────── */
+
+.carte-commande__detail {
+  border-top: 1px solid #f3f4f6;
+  padding: 1rem 1.25rem;
+  background: #fafafa;
+}
+
+.order-rows-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+.order-rows-table th {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 2px solid #e5e7eb;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.8rem;
+}
+.order-rows-table td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+
+.no-rows {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+.order-total-line {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1.5rem;
+  font-size: 0.95rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.order-paiement {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  text-align: right;
+}
+
+/* ─── Footer ─────────────────────────────────────────────── */
+
+.orders-footer {
+  margin-top: 2rem;
+}
+
+/* ─── Boutons (partagés) ─────────────────────────────────── */
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.4rem;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.88; }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.4rem;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1.5px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.btn-secondary:hover { opacity: 0.88; }
