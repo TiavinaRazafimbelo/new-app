@@ -1,37 +1,72 @@
+/**
+ * TopBar.jsx
+ * ─────────────────────────────────────────────────────────────
+ * Barre de navigation du frontoffice.
+ *
+ * MODIFICATION :
+ *   - Ajout du lien "Mes commandes" visible uniquement si le client
+ *     est authentifié (pas anonyme).
+ *   - Lien actif mis en surbrillance selon la route courante.
+ * ─────────────────────────────────────────────────────────────
+ */
+
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
+import { useCartContext } from '../contexts/CartContext';
 import './TopBar.css';
 
 const TopBar = () => {
   const { client, isConnected, logout } = useFrontofficeClient();
-  const navigate = useNavigate();
-  const location = useLocation(); // Récupère la route actuelle
+  const { cartCount: nbArticles } = useCartContext();
+  const navigate  = useNavigate();
+  const location  = useLocation();
 
   const handleLogout = () => {
-    logout(); // Utiliser la méthode du hook
-    navigate('/'); // Rediriger vers la page d'accueil (ClientsPage)
+    logout();
+    navigate('/');
   };
 
-  // Masquer le bouton panier si on est déjà sur /cart
-  const isCartPage = location.pathname === '/cart';
+  const isCartPage   = location.pathname === '/cart';
+  const isOrdersPage = location.pathname === '/orders';
+
+  // Un client est "authentifié" s'il n'est pas anonyme et a un ID réel
+  const estAuthentifie = isConnected && client && !client.anonymous && client.id;
 
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <span className="topbar-logo"><h1>Frontoffice new app</h1></span>
+        <Link to="/products" className="topbar-logo">
+          <h1>Frontoffice new app</h1>
+        </Link>
       </div>
 
       <div className="topbar-right">
-        {/* Bouton panier - masqué sur /cart */}
+
+        {/* ── Mes commandes (uniquement si authentifié) ────── */}
+        {estAuthentifie && (
+          <Link
+            to="/orders"
+            className={`nav-link-topbar ${isOrdersPage ? 'nav-link-topbar--active' : ''}`}
+          >
+            <span>📋</span>
+            <span>Mes commandes</span>
+          </Link>
+        )}
+
+        {/* ── Panier (masqué sur /cart) ─────────────────────── */}
         {!isCartPage && (
           <Link to="/cart" className="cart-button">
             <span className="cart-icon">🛒</span>
             <span className="cart-label">Mon panier</span>
+            {/* Badge nombre d'articles */}
+            {nbArticles > 0 && (
+              <span className="cart-badge">{nbArticles}</span>
+            )}
           </Link>
         )}
 
-        {/* État de connexion */}
+        {/* ── Infos client + actions ────────────────────────── */}
         <div className="auth-status">
           {isConnected ? (
             <>
@@ -39,15 +74,19 @@ const TopBar = () => {
                 {client.anonymous ? (
                   <>Navigation en tant qu'<strong>Anonyme</strong></>
                 ) : (
-                  <>Connecté en tant que <strong>{client.firstName} {client.lastName}</strong></>
+                  <>
+                    <strong>{client.firstName} {client.lastName}</strong>
+                  </>
                 )}
               </span>
-              {/* Si anonyme : afficher les deux boutons (Se connecter + Déconnexion) */}
+
+              {/* Bouton "Se connecter" si anonyme */}
               {client.anonymous && (
                 <Link to="/clients" className="btn-login">
                   Se connecter
                 </Link>
               )}
+
               <button className="btn-logout" onClick={handleLogout}>
                 Déconnexion
               </button>
@@ -58,6 +97,7 @@ const TopBar = () => {
             </Link>
           )}
         </div>
+
       </div>
     </header>
   );

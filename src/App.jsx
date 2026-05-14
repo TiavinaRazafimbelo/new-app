@@ -14,7 +14,6 @@ import { CartProvider }                  from './frontoffice/contexts/CartContex
 import ProtectedRoute                    from './backoffice/components/ProtectedRoute';
 import LoginPage                         from './backoffice/pages/LoginPage';
 import DashboardPage                     from './backoffice/pages/DashboardPage';
-import ImportPage                        from './backoffice/pages/ImportPage';
 import CommandesPage                     from './backoffice/pages/CommandesPage';
 import ResetDataPage                     from './backoffice/pages/ResetDataPage';
 import BackofficeLayout                  from './backoffice/components/BackofficeLayout';
@@ -25,7 +24,11 @@ import CartPage                          from './frontoffice/pages/CartPage';
 import CheckoutPage                      from './frontoffice/pages/CheckoutPage';   // ← NOUVEAU
 import OrdersPage                        from './frontoffice/pages/OrdersPage';     // ← NOUVEAU
 
-import DiagOrderSchema from './frontoffice/pages/DiagOrderSchema';
+import ImportPage from './backoffice/import/ImportPage.jsx';
+
+
+// import DiagOrderSchema from './frontoffice/pages/DiagOrderSchema';
+import DiagStock from './frontoffice/pages/DiagStock';
 
 
 import './App.css';
@@ -67,8 +70,9 @@ function App() {
                   <Route path="/checkout"   element={<CheckoutPage />} />  {/* ← NOUVEAU */}
                   <Route path="/orders"     element={<OrdersPage />} />    {/* ← NOUVEAU */}
 
-                  // dans les routes frontoffice :
-<Route path="/diag" element={<DiagOrderSchema />} />
+                  
+// dans les routes frontoffice :
+<Route path="/diag-stock/:id" element={<DiagStock />} />
 
                   {/* Redirections par défaut */}
                   <Route index element={<Navigate to="/clients" replace />} />

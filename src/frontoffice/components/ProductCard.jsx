@@ -1,53 +1,58 @@
-import React, { useState, useEffect } from "react";
-import { getProductImages } from "../services/productsService";
-import { Link } from "react-router-dom";
+/**
+ * ProductCard.jsx
+ * ─────────────────────────────────────────────────────────────
+ * MODIFICATIONS :
+ *   - Prix affiché TTC (via product.price déjà calculé TTC dans productsService)
+ *   - Suppression de l'appel getProductImages() dans le useEffect :
+ *     l'imageId est déjà dans product.imageId (fourni par getProducts())
+ *     → plus de requête API supplémentaire par carte
+ * ─────────────────────────────────────────────────────────────
+ */
+
+import React from 'react';
+import { Link } from 'react-router-dom';
 
 export const ProductCard = ({ product }) => {
-  const [images, setImages] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // L'imageId est déjà disponible dans product (fourni par getProducts())
+  // Pas besoin d'un useEffect + requête API supplémentaire
+  const imageUrl = product.imageId
+    ? `/api/images/products/${product.id}/${product.imageId}`
+    : '/placeholder.png';
 
-  useEffect(() => {
-    getProductImages(product.id)
-        .then((imgs) => {
-          if (imgs[0]) {
-          }
-          setImages(imgs);
-        })
-      .catch((err) => console.error("Erreur images:", err))
-      .finally(() => setLoading(false));
-  }, [product.id]);
+  return (
+    <div className="product-card">
+      {/* Badge HOT/NEW */}
+      {product.badge && (
+        <span className={`product-badge product-badge--${product.badge.toLowerCase()}`}>
+          {product.badge}
+        </span>
+      )}
 
-    // Prendre la première image (ou placeholder)
-    const firstImage = images[0];
-
-    const imageUrl = firstImage?.id
-      ? `/api/images/products/${product.id}/${firstImage.id}`
-      : '/placeholder.png';
-
-
-    return (
-      <div className="product-card">
-        {/* Badge HOT/NEW */}
-        {product.badge && (
-          <span className={`product-badge product-badge--${product.badge.toLowerCase()}`}>
-            {product.badge}
-          </span>
-        )}
-    
-        <div className="product-image">
-          {loading ? (
-            <p>Chargement image...</p>
-          ) : (
-            <img src={imageUrl} alt={product.name} />
-          )}
-        </div>
-        <h3>{product.name}</h3>
-        <p className="price">{product.price} €</p>
-        <Link to={`/product/${product.id}`} className="btn">
-          Voir détails
-        </Link>
+      <div className="product-image">
+        <img
+          src={imageUrl}
+          alt={product.name}
+          loading="lazy"
+          onError={(e) => {
+            // Si l'image échoue → placeholder silencieux
+            e.target.style.opacity = '0.3';
+            // e.target.src = '/placeholder.png';
+          }}
+        />
       </div>
-    );
+
+      <h3>{product.name}</h3>
+
+      {/* Prix TTC — product.price est déjà en TTC (calculé dans productsService) */}
+      <p className="price">
+        {product.price.toFixed(2)} € <span className="price-mention">TTC</span>
+      </p>
+
+      <Link to={`/product/${product.id}`} className="btn">
+        Voir détails
+      </Link>
+    </div>
+  );
 };
 
 export default ProductCard;

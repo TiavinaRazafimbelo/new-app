@@ -1,3 +1,4 @@
+// products.jsx
 import React, { useEffect, useState } from "react";
 import { getProducts, searchProducts, getCategories } from "../services/productsService";
 import { getProductImages } from "../services/productsService";

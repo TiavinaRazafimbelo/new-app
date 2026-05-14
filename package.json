@@ -16,6 +16,7 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.8.0",
     "js-md5": "^0.8.3",
+    "jszip": "^3.10.1",
     "papaparse": "^5.5.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

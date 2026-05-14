@@ -49,14 +49,14 @@ export const CartProvider = ({ children }) => {
   // ⚠️ SYNCHRONISATION IMPORTANTE : Écoute les changements du client
   useEffect(() => {
     const newClientId = getClientId();
-    console.log('[CartContext] Client changé :', { ancien: currentClientId, nouveau: newClientId, client });
+    // console.log('[CartContext] Client changé :', { ancien: currentClientId, nouveau: newClientId, client });
     
     // Si le client a réellement changé, met à jour le panier
     if (newClientId !== currentClientId) {
       setCurrentClientId(newClientId);
       const newCart = getCart(newClientId);
       setCart(newCart);
-      console.log('[CartContext] Panier chargé pour client', newClientId, ':', newCart.length, 'articles');
+      // console.log('[CartContext] Panier chargé pour client', newClientId, ':', newCart.length, 'articles');
     }
   }, [client]); // Écoute le client directement
 
@@ -77,7 +77,7 @@ export const CartProvider = ({ children }) => {
    * Ajoute un article au panier
    */
   const addToCart = (item) => {
-    console.log('[CartContext] Ajout article au panier du client', currentClientId);
+    // console.log('[CartContext] Ajout article au panier du client', currentClientId);
     const updatedCart = addToCartService(currentClientId, item);
     setCart(updatedCart);
   };
@@ -130,7 +130,7 @@ export const CartProvider = ({ children }) => {
     setCurrentClientId(authenticatedClientId);
     setCart(mergedCart);
     
-    console.log('[CartContext] Fusion terminée, panier mis à jour');
+    // console.log('[CartContext] Fusion terminée, panier mis à jour');
   };
 
   const value = {
@@ -166,3 +166,5 @@ export const useCart = () => {
   }
   return context;
 };
+
+export const useCartContext = useCart;

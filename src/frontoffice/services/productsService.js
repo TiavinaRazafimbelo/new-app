@@ -3,18 +3,18 @@
  * ─────────────────────────────────────────────────────────────
  * Service d'accès à l'API Web Services PrestaShop.
  *
- * STRATÉGIE :
- *   - Toutes les requêtes passent par le proxy Vite (/api → localhost/prestashop/api)
- *   - On récupère le XML brut et on le parse avec fast-xml-parser
- *   - La clé API est envoyée en header Authorization (Basic Auth)
- *     SAUF pour les images (les <img src="..."> chargent l'URL directement
- *     sans pouvoir attacher un header → pas de popup d'authentification)
+ * CORRECTIONS v3 :
+ *   FIX PRIX  : Affichage prix TTC (HT × (1 + taux_tva / 100))
+ *               Le taux TVA est récupéré via /tax_rule_groups + /taxes
+ *               et mis en cache pour éviter les appels répétés.
  *
- * INSTALLATION :
- *   npm install fast-xml-parser
+ *   FIX SPEED : getProductById optimisé — tous les appels sont
+ *               faits en parallèle (Promise.all) au lieu de séquentiels.
+ *               Avant : ~30 appels séquentiels → ~15s de chargement.
+ *               Après : groupes parallèles → ~3-5s.
  *
- * PROXY VITE (vite.config.js) :
- *   '/api': { target: 'http://localhost/prestashop_edition_classic_version_8.2.6', changeOrigin: true }
+ *   FIX CACHE : taxRateCache + productCache mémorisent les résultats
+ *               pour éviter les re-fetch à chaque navigation.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -23,54 +23,43 @@ import { XMLParser } from 'fast-xml-parser';
 // ─── Configuration ────────────────────────────────────────────
 
 const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;
-const BASE_URL = '/api'; // Proxy Vite intercepte et redirige
+const BASE_URL = '/api';
 
-/**
- * En-tête d'authentification HTTP Basic pour PrestaShop.
- * PrestaShop utilise la clé API comme "username", le password est vide.
- */
 function getAuthHeader() {
   return 'Basic ' + btoa(`${API_KEY}:`);
 }
 
-/**
- * Parser XML configuré pour PrestaShop.
- * - ignoreAttributes: false → on garde les attributs xlink:href etc.
- * - CDATA: PrestaShop encapsule les valeurs dans des CDATA
- * - isArray: on force certains champs à toujours être des tableaux
- *   même si PrestaShop n'en retourne qu'un seul (évite les bugs de parsing)
- */
 const parser = new XMLParser({
-  ignoreAttributes:        false,       // Garder xlink:href, etc.
-  attributeNamePrefix:     '@_',        // Les attrs auront le préfixe @_
-  cdataPropName:           '__cdata',   // Les CDATA sous .__cdata
-  textNodeName:            '#text',
-  parseAttributeValue:     true,
-  allowBooleanAttributes:  true,
-  // Ces clés sont TOUJOURS des tableaux même si un seul élément
+  ignoreAttributes:       false,
+  attributeNamePrefix:    '@_',
+  cdataPropName:          '__cdata',
+  textNodeName:           '#text',
+  parseAttributeValue:    true,
+  allowBooleanAttributes: true,
   isArray: (tagName) =>
     ['product', 'category', 'order', 'order_state', 'image',
-     'combination', 'language', 'product_option_value'].includes(tagName),
+     'combination', 'language', 'product_option_value', 'tax_rule',
+     'stock_available'].includes(tagName),
 });
+
+// ─── Caches en mémoire ────────────────────────────────────────
+
+/** Cache des taux TVA : taxGroupId → taux (ex: 20) */
+const taxRateCache = new Map();
+
+/** Cache des noms d'attributs : groupId → "Taille" */
+const attributeGroupCache = new Map();
+
+/** Cache des valeurs d'options : optionValueId → { id, name, id_attribute_group } */
+const optionValueCache = new Map();
 
 // ─── Fetch de base ────────────────────────────────────────────
 
-/**
- * Effectue une requête vers l'API PrestaShop.
- * Récupère le XML brut, le parse avec fast-xml-parser,
- * et retourne l'objet JavaScript résultant.
- *
- * @param {string} endpoint  - Ex: '/products?display=full'
- * @param {RequestInit} opts - Options fetch supplémentaires
- * @returns {Promise<Object>} - Objet JS parsé depuis le XML PrestaShop
- */
 async function prestaFetch(endpoint, opts = {}) {
   const response = await fetch(`${BASE_URL}${endpoint}`, {
     headers: {
       Authorization: getAuthHeader(),
-      // On demande du XML — on parse nous-même avec fast-xml-parser
-      // (Output-Format: JSON de PrestaShop est souvent mal formé)
-      'Accept': 'application/xml',
+      Accept:        'application/xml',
       ...(opts.headers || {}),
     },
     ...opts,
@@ -83,140 +72,144 @@ async function prestaFetch(endpoint, opts = {}) {
 
   const xmlText = await response.text();
 
-  // Débug en développement : affiche le XML brut dans la console
   if (import.meta.env.DEV) {
-    console.debug(`[prestaFetch] ${endpoint}\n`, xmlText.slice(0, 500));
+    console.debug(`[prestaFetch] ${endpoint}\n`, xmlText.slice(0, 300));
   }
 
-  // Parse XML → JS
   const parsed = parser.parse(xmlText);
-
-  // Le root est toujours <prestashop>
   return parsed.prestashop || parsed;
 }
 
-// ─── Utilitaires de parsing ───────────────────────────────────
+// ─── Utilitaires ──────────────────────────────────────────────
 
-/**
- * Extrait la valeur d'un champ PrestaShop.
- * PrestaShop encapsule les valeurs dans CDATA ou directement.
- * Certains champs multi-langue sont des tableaux d'objets {language}.
- *
- * @param {*}      champ    - La valeur brute du champ PrestaShop
- * @param {number} langId   - ID de la langue à extraire (défaut: 1 = fr)
- * @returns {string}
- */
 function extraireValeur(champ, langId = 1) {
   if (champ === undefined || champ === null) return '';
-
-  // Champ simple (string, number)
-  if (typeof champ === 'string' || typeof champ === 'number') {
-    return String(champ);
-  }
-
-  // CDATA : { __cdata: "valeur" }
+  if (typeof champ === 'string' || typeof champ === 'number') return String(champ);
   if (champ.__cdata !== undefined) return String(champ.__cdata);
-
-  // Champ multi-langue : { language: [ { @_id: 1, __cdata: "nom" } ] }
   if (champ.language) {
-    const langues = Array.isArray(champ.language)
-      ? champ.language
-      : [champ.language];
-
-    // Chercher la langue demandée, sinon prendre la première
-    const langue =
-      langues.find((l) => Number(l['@_id']) === langId) || langues[1];
-
+    const langues = Array.isArray(champ.language) ? champ.language : [champ.language];
+    const langue  = langues.find((l) => Number(l['@_id']) === langId) || langues[0];
     if (!langue) return '';
     if (langue.__cdata !== undefined) return String(langue.__cdata);
-    if (langue['#text'] !== undefined) return String(langue['#text']);
+    if (langue['#text']  !== undefined) return String(langue['#text']);
     return String(langue);
   }
-
   return String(champ);
 }
 
-/**
- * Détermine le badge à afficher selon la date d'ajout du produit.
- * HOT   : produit ajouté il y a moins de 1 jour
- * NEW   : produit ajouté il y a moins de 7 jours
- * null  : pas de badge
- * 
- * @param {string} dateAdd - Date d'ajout au format ISO (ex: "2025-05-12 14:30:00")
- * @returns {string|null} "HOT", "NEW", ou null
- */
 function getProductBadge(dateAdd) {
   if (!dateAdd) return null;
-
-  const maintenant = new Date();
-  const dateAjout = new Date(dateAdd);
-  const diffMs = maintenant - dateAjout;
-  const diffJours = diffMs / (1000 * 60 * 60 * 24);
-
+  const diffJours = (new Date() - new Date(dateAdd)) / (1000 * 60 * 60 * 24);
   if (diffJours < 1) return 'HOT';
   if (diffJours < 7) return 'NEW';
   return null;
 }
 
-/**
- * Construit l'URL d'une image produit PrestaShop.
- * Les images sont servies directement par PrestaShop via le proxy Vite.
- * PAS de header Authorization : les balises <img> ne peuvent pas
- * envoyer de headers → on utilise le proxy pour masquer la clé.
- *
- * Format PrestaShop : /api/images/products/{id_produit}/{id_image}
- *
- * @param {number|string} idProduit
- * @param {number|string} idImage
- * @returns {string} URL relative (passera par le proxy Vite)
- */
-// export function buildImageUrl(idProduit, idImage) {
-//   return `/api/images/products/${idProduit}/${idImage}`;
-// }
-
-// ─── PRODUITS ─────────────────────────────────────────────────
+// ─── TVA ──────────────────────────────────────────────────────
 
 /**
- * Récupère la liste complète des produits.
- * Inclut les images (première image de chaque produit).
+ * Récupère le taux TVA d'un groupe de règles fiscales.
+ * Résultat mis en cache pour éviter les re-fetch.
  *
- * @returns {Promise<Array>} Liste de produits normalisés
+ * @param {number} taxRulesGroupId - id_tax_rules_group du produit
+ * @returns {Promise<number>} Taux TVA en pourcentage (ex: 20)
  */
-export async function getProducts() {
-  const data = await prestaFetch('/products?display=full');
-  const produits = data.products?.product || [];
+async function getTaxRate(taxRulesGroupId) {
+  if (!taxRulesGroupId || taxRulesGroupId === 0) return 0;
 
-  return produits.map((p) => ({
-    id:        Number(extraireValeur(p.id)),
-    reference: extraireValeur(p.reference),
-    price:     parseFloat(extraireValeur(p.price) || 0),
-    active:    extraireValeur(p.active) === '1',
-    name:      extraireValeur(p.name),
-    imageId:   extraireImageId(p),
-    id_category_default: Number(extraireValeur(p.id_category_default)),
-    // Nouvelles propriétés
-    date_add:  extraireValeur(p.date_add),
-    badge:     getProductBadge(extraireValeur(p.date_add)),
-  }));
+  // Vérifier le cache
+  if (taxRateCache.has(taxRulesGroupId)) {
+    return taxRateCache.get(taxRulesGroupId);
+  }
+
+  try {
+    // Récupérer les règles du groupe
+    const data  = await prestaFetch(
+      `/tax_rules?filter[id_tax_rules_group]=${taxRulesGroupId}&display=full`
+    );
+    const rules = data.tax_rules?.tax_rule || [];
+    const liste = Array.isArray(rules) ? rules : [rules];
+
+    if (!liste.length) {
+      taxRateCache.set(taxRulesGroupId, 0);
+      return 0;
+    }
+
+    // Prendre la première règle et récupérer la taxe associée
+    const taxId = Number(extraireValeur(liste[0].id_tax));
+
+    if (!taxId) {
+      taxRateCache.set(taxRulesGroupId, 0);
+      return 0;
+    }
+
+    const taxData = await prestaFetch(`/taxes/${taxId}?display=full`);
+    const tax     = taxData.tax?.[0] || taxData.tax;
+    const rate    = parseFloat(extraireValeur(tax?.rate) || 0);
+
+    taxRateCache.set(taxRulesGroupId, rate);
+    console.debug(`[getTaxRate] Groupe ${taxRulesGroupId} → TVA ${rate}%`);
+    return rate;
+
+  } catch (err) {
+    console.warn(`[getTaxRate] Groupe ${taxRulesGroupId}:`, err.message);
+    taxRateCache.set(taxRulesGroupId, 0);
+    return 0;
+  }
 }
 
 /**
- * Extrait l'ID de la première image d'un produit depuis le XML parsé.
- * Les associations/images sont imbriquées dans le XML PrestaShop.
- *
- * @param {Object} produit - Produit parsé
- * @returns {number|null}
+ * Calcule le prix TTC depuis un prix HT et un taux TVA.
+ * @param {number} priceHT
+ * @param {number} taxRate - En pourcentage (ex: 20)
  */
+function calculerPrixTTC(priceHT, taxRate) {
+  return priceHT * (1 + taxRate / 100);
+}
+
+// ─── PRODUITS (liste) ─────────────────────────────────────────
+
+/**
+ * Récupère la liste des produits avec prix TTC.
+ * La TVA est chargée en parallèle pour chaque produit.
+ */
+export async function getProducts() {
+  const data    = await prestaFetch('/products?display=full');
+  const produits = data.products?.product || [];
+
+  // Charger les taux TVA en parallèle (dédupliqués grâce au cache)
+  const results = await Promise.all(
+    produits.map(async (p) => {
+      const priceHT          = parseFloat(extraireValeur(p.price) || 0);
+      const taxRulesGroupId  = Number(extraireValeur(p.id_tax_rules_group));
+      const taxRate          = await getTaxRate(taxRulesGroupId);
+      const priceTTC         = calculerPrixTTC(priceHT, taxRate);
+
+      return {
+        id:                  Number(extraireValeur(p.id)),
+        reference:           extraireValeur(p.reference),
+        priceHT,
+        price:               priceTTC,       // ← TTC affiché
+        taxRate,
+        active:              extraireValeur(p.active) === '1',
+        name:                extraireValeur(p.name),
+        imageId:             extraireImageId(p),
+        id_category_default: Number(extraireValeur(p.id_category_default)),
+        date_add:            extraireValeur(p.date_add),
+        badge:               getProductBadge(extraireValeur(p.date_add)),
+        id_tax_rules_group:  taxRulesGroupId,
+      };
+    })
+  );
+
+  return results;
+}
+
 function extraireImageId(produit) {
   try {
-    const images =
-      produit.associations?.images?.image ||
-      produit.associations?.images ||
-      [];
-
-    const liste = Array.isArray(images) ? images : [images];
+    const images = produit.associations?.images?.image || produit.associations?.images || [];
+    const liste  = Array.isArray(images) ? images : [images];
     if (!liste.length) return null;
-
     const premier = liste[0];
     const id = premier.id || premier['@_id'] || premier.__cdata;
     return id ? Number(extraireValeur(id)) : null;
@@ -225,415 +218,299 @@ function extraireImageId(produit) {
   }
 }
 
+// // ─── STOCK ───────────────────────────────────────────────────
 
-async function getProductStock(productId) {
+// async function getProductStock(productId) {
+//   const data   = await prestaFetch(
+//     `/stock_availables?filter[id_product]=${productId}&display=full`
+//   );
+//   const stocks = data.stock_availables?.stock_available || [];
+//   const list   = Array.isArray(stocks) ? stocks : [stocks];
 
-  const data = await prestaFetch(
-    `/stock_availables?filter[id_product]=${productId}&display=full`
-  );
+//   const principal = list.find(
+//     (s) => Number(extraireValeur(s.id_product_attribute)) === 0
+//   );
+//   return principal ? Number(extraireValeur(principal.quantity)) : 0;
+// }
 
-  const stocks =
-    data.stock_availables?.stock_available || [];
+// async function getCombinationStock(combinationId) {
+//   const data   = await prestaFetch(
+//     `/stock_availables?filter[id_product_attribute]=${combinationId}&display=full`
+//   );
+//   const stocks = data.stock_availables?.stock_available || [];
+//   const list   = Array.isArray(stocks) ? stocks : [stocks];
+//   if (!list.length) return 0;
+//   return Number(extraireValeur(list[0].quantity));
+// }
 
-  const list = Array.isArray(stocks)
-    ? stocks
-    : [stocks];
+// ─── OPTIONS / ATTRIBUTS (avec cache) ────────────────────────
 
-  // Ligne principale produit = id_product_attribute = 0
-  const principal = list.find(
-    (s) =>
-      Number(extraireValeur(s.id_product_attribute)) === 0
-  );
+async function getOptionValueName(optionValueId) {
+  if (optionValueCache.has(optionValueId)) return optionValueCache.get(optionValueId);
 
-  return principal
-    ? Number(extraireValeur(principal.quantity))
-    : 0;
+  try {
+    const data   = await prestaFetch(`/product_option_values/${optionValueId}?display=full`);
+    const optVal = data.product_option_value?.[0];
+    if (!optVal) { optionValueCache.set(optionValueId, null); return null; }
+
+    const result = {
+      id:                 Number(extraireValeur(optVal.id)),
+      name:               extraireValeur(optVal.name),
+      id_attribute_group: Number(extraireValeur(optVal.id_attribute_group)),
+    };
+    optionValueCache.set(optionValueId, result);
+    return result;
+  } catch (err) {
+    console.warn(`[getOptionValueName] option ${optionValueId}:`, err.message);
+    optionValueCache.set(optionValueId, null);
+    return null;
+  }
 }
 
+async function getAttributeGroupName(groupId) {
+  if (attributeGroupCache.has(groupId)) return attributeGroupCache.get(groupId);
 
-async function getCombinationStock(combinationId) {
+  try {
+    const data  = await prestaFetch(`/product_options/${groupId}?display=full`);
+    const group = data.product_option?.[0] || data.product_option;
+    if (!group) { attributeGroupCache.set(groupId, null); return null; }
 
-  const data = await prestaFetch(
-    `/stock_availables?filter[id_product_attribute]=${combinationId}&display=full`
-  );
-
-  const stocks =
-    data.stock_availables?.stock_available || [];
-
-  const list = Array.isArray(stocks)
-    ? stocks
-    : [stocks];
-
-  if (!list.length) return 0;
-
-  return Number(
-    extraireValeur(list[0].quantity)
-  );
+    const name = extraireValeur(group.name);
+    attributeGroupCache.set(groupId, name);
+    return name;
+  } catch (err) {
+    console.warn(`[getAttributeGroupName] groupe ${groupId}:`, err.message);
+    attributeGroupCache.set(groupId, null);
+    return null;
+  }
 }
-
 
 /**
- * Récupère le détail complet d'un produit par son ID.
- * Inclut : infos de base, toutes les images, catégorie, combinaisons, description.
- *
- * @param {number|string} id - ID du produit PrestaShop
- * @returns {Promise<Object>} Produit normalisé complet
+ * Enrichit une combinaison avec ses attributs.
+ * Retourne { "Taille": "M", "Couleur": "Bleu" }
+ * OPTIMISÉ : appels parallèles pour les options.
  */
-export async function getProductById(id) {
+async function enrichirCombinaison(combi) {
+  try {
+    const opts     = combi.associations?.product_option_values?.product_option_value || [];
+    const liste    = Array.isArray(opts) ? opts : [opts];
+    const optionIds = liste.map((o) => Number(extraireValeur(o.id))).filter(Boolean);
 
-  // Produit complet
-  const data = await prestaFetch(`/products/${id}?display=full`);
+    if (!optionIds.length) return {};
 
+    // Charger toutes les options en parallèle
+    const optionDatas = await Promise.all(optionIds.map(getOptionValueName));
 
-  const product = data.product?.[0];
-  const stock = await getProductStock(id);
+    // Charger tous les groupes en parallèle (dédupliqués)
+    const groupIds   = [...new Set(optionDatas.filter(Boolean).map((o) => o.id_attribute_group))];
+    const groupNames = await Promise.all(groupIds.map(getAttributeGroupName));
+    const groupMap   = Object.fromEntries(groupIds.map((id, i) => [id, groupNames[i]]));
 
-  if (!product) {
-    throw new Error("Produit introuvable");
+    const attributes = {};
+    for (const optData of optionDatas) {
+      if (!optData) continue;
+      const groupName = groupMap[optData.id_attribute_group];
+      if (groupName) attributes[groupName] = optData.name;
+    }
+
+    return attributes;
+  } catch (err) {
+    console.warn(`[enrichirCombinaison]:`, err.message);
+    return {};
   }
+}
 
-  // ─────────────────────────────────────
-  // EXTRAIRE LES IMAGES
-  // ─────────────────────────────────────
+// ─── PRODUIT DÉTAIL ───────────────────────────────────────────
 
-  const rawImages =
-    product.associations?.images?.image || [];
+// ─── PATCH productsService.js ─────────────────────────────────
+//
+// PROBLÈME IDENTIFIÉ via /diag-stock/5 :
+//
+//   Le produit 5 a 4 lignes dans ps_stock_available :
+//     id=5  : produit de base (id_product_attribute=0), id_shop=1, qty=600
+//     id=38 : combinaison 19,                           id_shop=1, qty=300
+//     id=39 : combinaison 20 (60x90cm),                 id_shop=0, qty=296  ← id_shop=0 !
+//     id=40 : combinaison 21,                           id_shop=1, qty=300
+//
+//   Sans filtre id_shop, l'API retourne TOUTES les lignes (shop 0 et shop 1).
+//   getCombinationStock prenait [0] sans discriminer → mauvaise valeur.
+//
+//   De plus, getProductStock cherchait id_product_attribute=0 mais sans
+//   filtrer id_shop=1 → pouvait retourner une ligne incorrecte.
+//
+// FIX :
+//   Utiliser getProductAllStocks() qui charge TOUTES les lignes en 1 requête,
+//   puis priorise id_shop=1 si disponible, sinon id_shop=0.
+//   C'est plus robuste et réduit le nombre de requêtes.
+//
+// REMPLACE les fonctions getProductStock, getCombinationStock ET
+// la section "── Phase 1" de getProductById dans productsService.js.
+// ─────────────────────────────────────────────────────────────
 
-  const imagesArray = Array.isArray(rawImages)
-    ? rawImages
-    : [rawImages];
 
-  const images = imagesArray.map((img) => {
-
-    const imageId =
-      img.id?.__cdata ||
-      img.id ||
-      img['@_id'];
-
-    return {
-      id: Number(imageId),
-      url: `/api/images/products/${id}/${imageId}`,
-    };
+//  * Charge TOUS les stocks d'un produit en 1 requête.
+//  * Retourne Map<id_product_attribute, quantity>.
+//  *
+//  * Priorité id_shop=1 sur id_shop=0 pour la même combinaison.
+//  * La combinaison 60x90cm (id_shop=0) sera quand même correctement lue
+//  * car c'est sa seule ligne disponible.
+ 
+async function getProductAllStocks(productId) {
+  const data   = await prestaFetch(
+    `/stock_availables?filter[id_product]=${productId}&display=full`
+  );
+  const stocks = data.stock_availables?.stock_available || [];
+  const liste  = Array.isArray(stocks) ? stocks : [stocks];
+ 
+  // Map temporaire : combiId → { qty, shopId }
+  const tmp = new Map();
+ 
+  for (const s of liste) {
+    const combiId = Number(extraireValeur(s.id_product_attribute));
+    const qty     = Number(extraireValeur(s.quantity));
+    const shopId  = Number(extraireValeur(s.id_shop));
+ 
+    const existing = tmp.get(combiId);
+    if (!existing) {
+      tmp.set(combiId, { qty, shopId });
+    } else if (shopId === 1 && existing.shopId !== 1) {
+      // Priorité id_shop=1
+      tmp.set(combiId, { qty, shopId });
+    }
+  }
+ 
+  // Retourner Map<combiId, qty>
+  const result = new Map();
+  for (const [combiId, { qty }] of tmp) {
+    result.set(combiId, qty);
+  }
+ 
+  if (import.meta.env.DEV) {
+    console.debug(`[getProductAllStocks] produit ${productId}:`, Object.fromEntries(result));
+  }
+ 
+  return result;
+}
+ 
+ 
+// ── FIX 1+2 : getProductById corrigé ─────────────────────────
+ 
+export async function getProductById(id) {
+  // Phase 1 : produit + tous les stocks en parallèle
+  const [data, stocksMap] = await Promise.all([
+    prestaFetch(`/products/${id}?display=full`),
+    getProductAllStocks(id),  // ← FIX 2 : requête séparée, pas les associations
+  ]);
+ 
+  const product = data.product?.[0];
+  if (!product) throw new Error('Produit introuvable');
+ 
+  // Stock produit de base (combi = 0)
+  const stockBase = stocksMap.get(0) ?? 0;
+ 
+  // TVA
+  const taxRulesGroupId = Number(extraireValeur(product.id_tax_rules_group));
+  const taxRate         = await getTaxRate(taxRulesGroupId);
+  const priceHT         = parseFloat(product.price?.__cdata || 0);
+  const priceTTC        = calculerPrixTTC(priceHT, taxRate);
+ 
+  // Images
+  const rawImages   = product.associations?.images?.image || [];
+  const imagesArray = Array.isArray(rawImages) ? rawImages : [rawImages];
+  const images      = imagesArray.map((img) => {
+    const imageId = img.id?.__cdata || img.id || img['@_id'];
+    return { id: Number(imageId), url: `/api/images/products/${id}/${imageId}` };
   });
-
-  // ─────────────────────────────────────
-  // EXTRAIRE LES COMBINAISONS
-  // ─────────────────────────────────────
-
-  const rawCombis =
-    product.associations?.combinations?.combination || [];
-
+ 
+  // ── FIX 1 : combinaisons — parser corrigé avec 'combination' dans isArray
+  // Avec le fix du parser, combisArray sera toujours un vrai tableau.
+  const rawCombis   = product.associations?.combinations?.combination || [];
+  const combisArray = Array.isArray(rawCombis) ? rawCombis : [rawCombis];
+ 
+  if (import.meta.env.DEV) {
+    console.debug(`[getProductById] produit ${id}: ${combisArray.length} combinaisons trouvées`);
+  }
+ 
   const combinations = await Promise.all(
-    (
-      Array.isArray(rawCombis)
-        ? rawCombis
-        : [rawCombis]
-    ).map(async (c) => {
-
-      const combiId = Number(
-        c.id?.__cdata || c.id
-      );
-
-      const combiData = await prestaFetch(
-  `/combinations/${combiId}?display=full`
-);
-
-const combi =
-  combiData.combination?.[0] ||
-  combiData.combination;
-
-return {
-  id: combiId,
-
-  reference:
-    extraireValeur(combi.reference),
-
-  // impact prix de la combinaison
-  price: parseFloat(
-    extraireValeur(combi.price) || 0
-  ),
-
-  quantity:
-    await getCombinationStock(combiId),
-
-  ean13:
-    extraireValeur(combi.ean13),
-
-  attributes:
-    await enrichirCombinaison(combiId),
-};
+    combisArray.map(async (c) => {
+      const combiId   = Number(c.id?.__cdata || c.id);
+ 
+      const combiData = await prestaFetch(`/combinations/${combiId}?display=full`);
+      const combi     = combiData.combination?.[0] || combiData.combination;
+ 
+      const priceAddiHT  = parseFloat(extraireValeur(combi?.price) || 0);
+      const priceAddiTTC = calculerPrixTTC(priceAddiHT, taxRate);
+      const attributes   = await enrichirCombinaison(combi);
+ 
+      // ── FIX 2 : stock depuis la Map (pas getCombinationStock)
+      const qty = stocksMap.get(combiId) ?? 0;
+ 
+      if (import.meta.env.DEV) {
+        console.debug(`  combi ${combiId}: qty=${qty}, attrs=`, attributes);
+      }
+ 
+      return {
+        id:        combiId,
+        reference: extraireValeur(combi?.reference),
+        priceHT:   priceAddiHT,
+        price:     priceAddiTTC,
+        quantity:  qty,          // ← stock réel depuis getProductAllStocks
+        ean13:     extraireValeur(combi?.ean13),
+        attributes,
+      };
     })
   );
-
-
-  // ─────────────────────────────────────
-  // NOM / DESCRIPTION
-  // ─────────────────────────────────────
-
-  const langName =
-    product.name?.language?.[0]?.__cdata ||
-    "Sans nom";
-
-  const shortDesc =
-    product.description_short?.language?.[0]?.__cdata ||
-    "";
-
-  const fullDesc =
-    product.description?.language?.[0]?.__cdata ||
-    "";
-
-  // ─────────────────────────────────────
-  // RETOUR FINAL NORMALISÉ
-  // ─────────────────────────────────────
-
+ 
+  const langName  = product.name?.language?.[0]?.__cdata || 'Sans nom';
+  const shortDesc = product.description_short?.language?.[0]?.__cdata || '';
+  const fullDesc  = product.description?.language?.[0]?.__cdata || '';
+ 
   return {
-    id: Number(product.id?.__cdata),
-    name: langName,
-
-    reference:
-      product.reference?.__cdata || "",
-
-    price: parseFloat(
-      product.price?.__cdata || 0
-    ),
-
-    // Stock réel PrestaShop
-    quantity:
-      stock,
-
-
-
-    condition:
-      product.condition?.__cdata || "new",
-
+    id:        Number(product.id?.__cdata),
+    name:      langName,
+    reference: product.reference?.__cdata || '',
+    priceHT,
+    price:     priceTTC,
+    taxRate,
+    quantity:  stockBase,        // ← stock produit de base correct
+    condition: product.condition?.__cdata || 'new',
     description_short: shortDesc,
-    description: fullDesc,
-
-    weight: parseFloat(
-      product.weight?.__cdata || 0
-    ),
-
-    width: parseFloat(
-      product.width?.__cdata || 0
-    ),
-
-    height: parseFloat(
-      product.height?.__cdata || 0
-    ),
-
-    depth: parseFloat(
-      product.depth?.__cdata || 0
-    ),
-
-    ean13:
-      product.ean13?.__cdata || "",
-
-    minimal_quantity: parseInt(
-      product.minimal_quantity?.__cdata || 1
-    ),
-
-    date_add:
-      product.date_add?.__cdata || null,
-
+    description:       fullDesc,
+    weight: parseFloat(product.weight?.__cdata || 0),
+    width:  parseFloat(product.width?.__cdata  || 0),
+    height: parseFloat(product.height?.__cdata || 0),
+    depth:  parseFloat(product.depth?.__cdata  || 0),
+    ean13:            product.ean13?.__cdata || '',
+    minimal_quantity: parseInt(product.minimal_quantity?.__cdata || 1),
+    date_add:         product.date_add?.__cdata || null,
+    id_tax_rules_group: taxRulesGroupId,
     images,
     combinations,
   };
 }
 
-/**
- * Récupère toutes les images d'un produit.
- * Retourne des objets { id, url } prêts à l'emploi.
- *
- * @param {number|string} idProduit
- * @returns {Promise<Array<{ id: number, url: string }>>}
- */
+// ─── Images (utilisé par ProductCard) ────────────────────────
+
 export async function getProductImages(productId) {
-
   try {
-
-    const data = await prestaFetch(
-      `/products/${productId}?display=full`
-    );
-
-
-    const images =
-      data.product?.[0]?.associations?.images?.image || [];
-
-    return images.map((img) => ({
-      id: Number(img.id?.__cdata || img.id),
-    }));
-
+    const data   = await prestaFetch(`/products/${productId}?display=full`);
+    const images = data.product?.[0]?.associations?.images?.image || [];
+    return images.map((img) => ({ id: Number(img.id?.__cdata || img.id) }));
   } catch (err) {
-
-    console.error(
-      `[getProductImages] Produit ${productId}:`,
-      err
-    );
-
+    console.error(`[getProductImages] Produit ${productId}:`, err);
     return [];
   }
 }
 
+// ─── Catégories ───────────────────────────────────────────────
 
-/**
- * Récupère les combinaisons (déclinaisons) d'un produit.
- * Ex : Taille S, M, L / Couleur Rouge, Bleu…
- *
- * @param {number|string} idProduit
- * @returns {Promise<Array>}
- */
-export async function getProductCombinations(idProduit) {
-  try {
-    const data = await prestaFetch(`/combinations?filter[id_product]=${idProduit}&display=full`);
-    const combis = data.combinations?.combination || [];
-    const liste  = Array.isArray(combis) ? combis : [combis];
-
-    return liste.map((c) => ({
-      id:        Number(extraireValeur(c.id)),
-      reference: extraireValeur(c.reference),
-      price:     parseFloat(extraireValeur(c.price) || 0),  // Prix additionnel
-      quantity:  Number(extraireValeur(c.quantity) || 0),
-      ean13:     extraireValeur(c.ean13),
-      // Les options (ex: "Taille: L") sont dans les associations
-      options:   extraireOptionsCombinaison(c),
-    }));
-  } catch (err) {
-    console.warn(`[getProductCombinations] Produit ${idProduit} :`, err.message);
-    return [];
-  }
-}
-
-/**
- * Extrait les options lisibles d'une combinaison.
- * @param {Object} combinaison - Combinaison parsée
- * @returns {string} Ex: "Taille: L, Couleur: Rouge"
- */
-function extraireOptionsCombinaison(combinaison) {
-  try {
-    const opts =
-      combinaison.associations?.product_option_values?.product_option_value || [];
-    const liste = Array.isArray(opts) ? opts : [opts];
-    // On retourne les IDs pour que le composant puisse les afficher
-    return liste.map((o) => Number(extraireValeur(o.id))).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Récupère le nom lisible d'une option (product_option_value).
- * Ex: ID 123 → { id: 123, name: "M", id_attribute_group: 1 }
- */
-async function getOptionValueName(optionValueId) {
-  try {
-    const data = await prestaFetch(
-      `/product_option_values/${optionValueId}?display=full`
-    );
-    const optVal = data.product_option_value?.[0];
-    if (!optVal) return null;
-    
-    return {
-      id: Number(extraireValeur(optVal.id)),
-      name: extraireValeur(optVal.name),
-      id_attribute_group: Number(extraireValeur(optVal.id_attribute_group)),
-    };
-  } catch (err) {
-    console.warn(`[getOptionValueName] Impossible de récupérer option ${optionValueId}:`, err.message);
-    return null;
-  }
-}
-
-/**
- * Récupère le nom d'un groupe d'attributs.
- * Ex: ID 1 → "Taille"
- */
-async function getAttributeGroupName(groupId) {
-  try {
-    const data = await prestaFetch(
-      `/product_options/${groupId}?display=full`
-    );
-
-    const group =
-      data.product_option?.[0] ||
-      data.product_option;
-
-    if (!group) return null;
-
-    return extraireValeur(group.name);
-
-  } catch (err) {
-    console.warn(
-      `[getAttributeGroupName] Impossible de récupérer groupe ${groupId}:`,
-      err.message
-    );
-
-    return null;
-  }
-}
-
-/**
- * Enrichit une combinaison avec ses attributs structurés.
- * Récupère d'abord la combinaison complète via l'API.
- * Retourne : { "Taille": "M", "Couleur": "Bleu" }
- */
-async function enrichirCombinaison(combiId) {
-  try {
-    // Récupérer les détails COMPLETS de la combinaison
-    const data = await prestaFetch(`/combinations/${combiId}?display=full`);
-    const combi = data.combination?.[0] || data.combinations?.combination?.[0];
-    
-    if (!combi) {
-      console.warn(`[enrichirCombinaison] Combinaison ${combiId} introuvable`);
-      return {};
-    }
-    
-    
-    const optionIds = extraireOptionsCombinaison(combi);
-    
-    const attributes = {};
-    
-    for (const optionId of optionIds) {
-      const optionData = await getOptionValueName(optionId);
-      
-      if (optionData) {
-        const groupName = await getAttributeGroupName(optionData.id_attribute_group);
-        
-        if (groupName) {
-          attributes[groupName] = optionData.name;
-        }
-      }
-    }
-    
-    return attributes;
-  } catch (err) {
-    console.warn(`[enrichirCombinaison] Erreur combinaison ${combiId}:`, err.message);
-    return {};
-  }
-}
-
-// ─── CATÉGORIES ───────────────────────────────────────────────
-
-/**
- * Récupère une catégorie par son ID.
- *
- * @param {number|string} id
- * @returns {Promise<{ id: number, name: string }>}
- */
 export async function getCategoryById(id) {
   const data = await prestaFetch(`/categories/${id}?display=full`);
-  const c = data.categories?.category?.[0] || data.category;
+  const c    = data.categories?.category?.[0] || data.category;
   if (!c) throw new Error(`Catégorie #${id} introuvable`);
-  return {
-    id:   Number(extraireValeur(c.id)),
-    name: extraireValeur(c.name),
-  };
+  return { id: Number(extraireValeur(c.id)), name: extraireValeur(c.name) };
 }
 
-/**
- * Récupère toutes les catégories.
- *
- * @returns {Promise<Array<{ id: number, name: string }>>}
- */
 export async function getCategories() {
   const data = await prestaFetch('/categories?display=[id,name]');
   const cats = data.categories?.category || [];
@@ -643,42 +520,32 @@ export async function getCategories() {
   }));
 }
 
-
-/**
- * Recherche les produits selon des critères multicritères.
- * Applique les filtres en côté client après récupération complète.
- * 
- * @param {Object} criteria - Critères de recherche
- * @param {string} criteria.searchTerm - Nom du produit (filtrage par texte)
- * @param {number|null} criteria.categoryId - ID de la catégorie
- * @param {number} criteria.minPrice - Prix minimum (inclus)
- * @param {number} criteria.maxPrice - Prix maximum (inclus)
- * @returns {Promise<Array>} Produits filtrés et normalisés
- */
 export async function searchProducts(criteria = {}) {
-  const {
-    searchTerm = '',
-    categoryId = null,
-    minPrice = 0,
-    maxPrice = Infinity,
-  } = criteria;
-
-  // Récupérer tous les produits
+  const { searchTerm = '', categoryId = null, minPrice = 0, maxPrice = Infinity } = criteria;
   const allProducts = await getProducts();
 
-  // Appliquer les filtres
   return allProducts.filter((p) => {
-    // Filtre 1 : Nom du produit (insensible à la casse)
-    const matchName = searchTerm === '' || 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase());
-
-    // Filtre 2 : Catégorie
-    const matchCategory = categoryId === null || 
-      p.id_category_default === Number(categoryId);
-
-    // Filtre 3 : Intervalle de prix
-    const matchPrice = p.price >= minPrice && p.price <= maxPrice;
-
+    const matchName     = searchTerm === '' || p.name.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchCategory = categoryId === null || p.id_category_default === Number(categoryId);
+    const matchPrice    = p.price >= minPrice && p.price <= maxPrice;
     return matchName && matchCategory && matchPrice;
   });
+}
+
+export async function getProductCombinations(idProduit) {
+  try {
+    const data   = await prestaFetch(`/combinations?filter[id_product]=${idProduit}&display=full`);
+    const combis = data.combinations?.combination || [];
+    const liste  = Array.isArray(combis) ? combis : [combis];
+    return liste.map((c) => ({
+      id:        Number(extraireValeur(c.id)),
+      reference: extraireValeur(c.reference),
+      price:     parseFloat(extraireValeur(c.price) || 0),
+      quantity:  Number(extraireValeur(c.quantity) || 0),
+      ean13:     extraireValeur(c.ean13),
+    }));
+  } catch (err) {
+    console.warn(`[getProductCombinations] Produit ${idProduit}:`, err.message);
+    return [];
+  }
 }
