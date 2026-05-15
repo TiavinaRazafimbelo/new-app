@@ -16,6 +16,7 @@ import LoginPage                         from './backoffice/pages/LoginPage';
 import DashboardPage                     from './backoffice/pages/DashboardPage';
 import CommandesPage                     from './backoffice/pages/CommandesPage';
 import ResetDataPage                     from './backoffice/pages/ResetDataPage';
+import StockPage                     from './backoffice/pages/StockPage';
 import BackofficeLayout                  from './backoffice/components/BackofficeLayout';
 import ProductsPage                      from './frontoffice/pages/products';
 import ProductDetailPage                 from './frontoffice/pages/ProductDetailPage';
@@ -52,6 +53,7 @@ function App() {
           <Route path="import"     element={<ImportPage />} />
           <Route path="dashboard"  element={<DashboardPage />} />
           <Route path="commandes"  element={<CommandesPage />} />
+          <Route path="stock"      element={<StockPage />} />
           <Route path="reset"      element={<ResetDataPage />} />
         </Route>
 

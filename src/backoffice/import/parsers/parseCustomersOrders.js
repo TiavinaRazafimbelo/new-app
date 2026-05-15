@@ -3,24 +3,93 @@
  * Parse le CSV3 (clients + commandes/paniers) en objets normalisés.
  *
  * Format attendu :
- *   date | nom | email | pwd | adresse | achat | etat
+ *   date,nom,email,pwd,adresse,achat,etat
  *
- * Format colonne "achat" :
- *   [("REF";QTY;"VARIANTE"),("REF2";QTY2;"")]
+ * Format colonne "achat" (séparateur interne = \t OU ; selon export) :
+ *   [("REF"\tQTY\t"VARIANTE"),("REF2"\tQTY2\t"")]
+ *   [("REF";QTY;"VARIANTE")]
  *   Variante vide = produit simple ou combinaison par défaut
  *
  * Logique "etat" :
  *   "paiement accepté" → commande avec current_state=2
  *   ""                 → panier abandonné (cart créé, pas d'order)
+ *
+ * FIX :
+ *  - Parser CSV qui respecte les guillemets (ne coupe pas sur , dans "...")
+ *  - Regex parseCartItems accepte \t ET ; comme séparateur interne
+ *  - Normalisation accents pour ORDER_STATE_MAP (gère Latin-1 mal décodé)
  */
 
 import { CUSTOMER_COLUMNS, ORDER_STATE_MAP } from '../config/columnMapping.js';
 
+// ─── Parser CSV robuste ───────────────────────────────────────
+
 /**
- * Parse la colonne "achat" en tableau d'items
- * Exemples :
- *   [("T_01";3;"ngoza")]
- *   [("T_01";2;"kely"),("C_03";1;"")]
+ * Split une ligne CSV en respectant les champs entre guillemets doubles.
+ * Gère : virgule, point-virgule, pipe comme séparateur de colonnes.
+ * Gère : "" comme guillemet échappé à l'intérieur d'un champ guillemété.
+ *
+ * @param {string} line
+ * @param {string} sep - séparateur détecté (',', ';', '|')
+ * @returns {string[]}
+ */
+function splitCsvLine(line, sep) {
+  const result = [];
+  let current  = '';
+  let inQuotes = false;
+  let i        = 0;
+
+  while (i < line.length) {
+    const ch   = line[i];
+    const next = line[i + 1];
+
+    if (ch === '"') {
+      if (inQuotes && next === '"') {
+        // Guillemet échappé ("") → un seul guillemet littéral
+        current += '"';
+        i += 2;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      i++;
+      continue;
+    }
+
+    if (!inQuotes && ch === sep) {
+      result.push(current.trim());
+      current = '';
+      i++;
+      continue;
+    }
+
+    current += ch;
+    i++;
+  }
+
+  result.push(current.trim());
+  return result;
+}
+
+/**
+ * Détecte le séparateur de colonnes d'un CSV.
+ * Priorité : | > ; > , (on ignore les virgules dans les champs guillemétés).
+ * Pour CSV3 le séparateur est généralement la virgule — on le détecte sur l'en-tête.
+ */
+function detectSep(headerLine) {
+  if (headerLine.includes('|')) return '|';
+  if (headerLine.includes(';')) return ';';
+  return ',';
+}
+
+// ─── Parser colonne "achat" ───────────────────────────────────
+
+/**
+ * Parse la colonne "achat" en tableau d'items.
+ *
+ * Accepte les deux formats :
+ *   [("T_01";3;"ngoza")]          ← séparateur ;
+ *   [("T_01"\t3\tngoza)]          ← séparateur \t (tabulation)
+ *   [("T_01"\t3\t"ngoza")]        ← \t avec guillemets sur variant
  *
  * @param {string} raw
  * @returns {Array<{reference: string, quantity: number, variant: string}>}
@@ -28,21 +97,59 @@ import { CUSTOMER_COLUMNS, ORDER_STATE_MAP } from '../config/columnMapping.js';
 function parseCartItems(raw) {
   if (!raw || raw.trim() === '') return [];
 
+  // Normalise : remplace les tabulations internes par ;
+  // pour n'avoir qu'une seule regex à maintenir
+  const normalized = raw.replace(/\t/g, ';');
+
   const items = [];
-  // Regex : ("REF";QTY;"VARIANT")
-  const regex = /\("([^"]+)";(\d+);"([^"]*)"\)/g;
+
+  // Regex flexible :
+  //   - REF : entre guillemets ou non
+  //   - QTY : entier
+  //   - VARIANT : entre guillemets ou non, peut être vide
+  const regex = /"?([^";,()[\]]+)"?\s*;\s*(\d+)\s*;\s*"?([^";()[\]]*)"?/g;
   let match;
 
-  while ((match = regex.exec(raw)) !== null) {
-    items.push({
-      reference: match[1].trim(),
-      quantity:  parseInt(match[2], 10) || 1,
-      variant:   match[3].trim().toLowerCase(), // ngoza, kely, mainty...
-    });
+  while ((match = regex.exec(normalized)) !== null) {
+    const ref     = match[1].trim();
+    const qty     = parseInt(match[2], 10) || 1;
+    const variant = match[3].trim().toLowerCase();
+
+    if (ref) {
+      items.push({ reference: ref, quantity: qty, variant });
+    }
   }
 
   return items;
 }
+
+// ─── Normalisation état commande ──────────────────────────────
+
+/**
+ * Normalise une chaîne d'état : minuscules, suppression accents.
+ * Gère les deux cas : UTF-8 correct ("accepté") et Latin-1 mal décodé ("acceptÃ©").
+ */
+function normalizeEtat(raw) {
+  if (!raw) return '';
+  // Tentative de re-décodage Latin-1 → UTF-8 si caractères Ã présents
+  let str = raw;
+  if (str.includes('Ã')) {
+    try {
+      // Encode chaque char comme Latin-1 puis redécode en UTF-8
+      const bytes = Uint8Array.from(str, (c) => c.charCodeAt(0));
+      str = new TextDecoder('utf-8').decode(bytes);
+    } catch (_) {
+      // Si ça échoue, on garde la chaîne originale
+    }
+  }
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // supprime diacritiques
+    .trim();
+}
+
+// ─── Export principal ─────────────────────────────────────────
 
 /**
  * @param {string} csvText
@@ -51,37 +158,20 @@ function parseCartItems(raw) {
 export function parseCustomersOrdersCsv(csvText) {
   const lines = csvText
     .split('\n')
-    .map((l) => l.trim())
+    .map((l) => l.trimEnd())   // trimEnd seulement : ne pas perdre les colonnes vides en fin
     .filter(Boolean);
 
   if (lines.length < 2) throw new Error('[parseCustomersOrders] CSV vide ou sans données');
 
-  const sep     = lines[0].includes(';') ? ';' : ' ';
-  // CSV3 utilise des espaces comme séparateur entre colonnes,
-  // mais les valeurs peuvent contenir des espaces → on split sur \t ou espaces multiples
-  // Fallback: split sur tabulation si présente, sinon regex espace
-  const hasTab  = lines[0].includes('\t');
-  const splitter = hasTab
-    ? (l) => l.split('\t').map((c) => c.trim())
-    : (l) => l.split(/\s{2,}|\t/).map((c) => c.trim());
-
-  // Si séparateur standard détecté
-  const useStdSep = lines[0].includes(';') || lines[0].includes(',');
-  const stdSep    = lines[0].includes(';') ? ';' : ',';
-
-  const headers = useStdSep
-    ? lines[0].split(stdSep).map((h) => h.trim())
-    : splitter(lines[0]);
-
-  const rows = lines.slice(1);
+  const sep     = detectSep(lines[0]);
+  const headers = splitCsvLine(lines[0], sep).map((h) => h.trim());
+  const rows    = lines.slice(1);
 
   const results = [];
 
   for (let idx = 0; idx < rows.length; idx++) {
     const line = rows[idx];
-    const cols  = useStdSep
-      ? line.split(stdSep).map((c) => c.trim())
-      : splitter(line);
+    const cols = splitCsvLine(line, sep);
 
     const raw = {};
     headers.forEach((h, i) => { raw[h] = cols[i] ?? ''; });
@@ -92,30 +182,29 @@ export function parseCustomersOrdersCsv(csvText) {
       mapped[normKey] = raw[csvCol] ?? '';
     });
 
-    // Etat de commande
-    const etatRaw    = (mapped.order_state || '').toLowerCase().trim()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // suppr accents
-    const orderState = ORDER_STATE_MAP[etatRaw] ?? ORDER_STATE_MAP[''];
+    // État de commande — robuste aux accents mal encodés
+    const etatNorm   = normalizeEtat(mapped.order_state);
+    const orderState = ORDER_STATE_MAP[etatNorm] ?? ORDER_STATE_MAP[''];
 
     // Articles
     const cartItems = parseCartItems(mapped.cart_items);
 
-    // Nom → prénom/nom (CSV donne juste "Rakoto" = nom de famille)
+    // Nom → prénom / nom de famille
     const nomParts = (mapped.lastname || '').trim().split(' ');
     const lastname  = nomParts[nomParts.length - 1] || 'Client';
-    const firstname = nomParts.length > 1 ? nomParts.slice(0, -1).join(' ') : 'Prénom';
+    const firstname = nomParts.length > 1 ? nomParts.slice(0, -1).join(' ') : 'Prenom';
 
     results.push({
-      _line:       idx + 2,
-      date_add:    mapped.date_add    || '',
+      _line:        idx + 2,
+      date_add:     mapped.date_add || '',
       lastname,
       firstname,
-      email:       mapped.email       || '',
-      passwd:      mapped.passwd      || '',
-      address1:    mapped.address1    || '',
-      cart_items:  cartItems,
-      order_state: orderState,          // null = panier, number = commande
-      is_cart_only: orderState === null, // true = panier abandonné
+      email:        (mapped.email || '').toLowerCase().trim(),
+      passwd:       mapped.passwd  || '',
+      address1:     mapped.address1 || '',
+      cart_items:   cartItems,
+      order_state:  orderState,           // null = panier, number = commande
+      is_cart_only: orderState === null,  // true = panier abandonné
     });
   }
 
@@ -155,13 +244,11 @@ export function groupCustomerOrders(parsed) {
     if (row.cart_items.length === 0) continue;
 
     if (row.is_cart_only) {
-      // Panier abandonné
       entry.carts.push({
         date_add:   row.date_add,
         cart_items: row.cart_items,
       });
     } else {
-      // Commande
       entry.orders.push({
         date_add:    row.date_add,
         cart_items:  row.cart_items,

@@ -23,6 +23,7 @@ import './BackofficeLayout.css';
 const NAV_LIENS = [
   { path: '/backoffice/dashboard', label: 'Tableau de bord', icone: '' },
   { path: '/backoffice/commandes', label: 'Commandes',        icone: '' },
+  { path: '/backoffice/stock',     label: 'Stock',            icone: '' },
   { path: '/backoffice/import',    label: 'Import',           icone: '' },
   { path: '/backoffice/reset',     label: 'Reset Data',       icone: '' },
 ];

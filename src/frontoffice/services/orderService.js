@@ -335,34 +335,34 @@ async function createPrestaCartWithProducts(customerId, addressId, secureKey, ca
  * ce qui pouvait être le stock de la combinaison OU le stock du produit de base,
  * causant une double décrémentation quand les deux étaient mis à jour.
  */
-async function getStockInfo(productId, combinationId) {
-  let filter;
+// async function getStockInfo(productId, combinationId) {
+//   let filter;
 
-  if (combinationId > 0) {
-    // Stock spécifique à la combinaison
-    filter = `filter[id_product]=${productId}&filter[id_product_attribute]=${combinationId}`;
-  } else {
-    // Stock du produit sans combinaison (id_product_attribute = 0)
-    filter = `filter[id_product]=${productId}&filter[id_product_attribute]=0`;
-  }
+//   if (combinationId > 0) {
+//     // Stock spécifique à la combinaison
+//     filter = `filter[id_product]=${productId}&filter[id_product_attribute]=${combinationId}`;
+//   } else {
+//     // Stock du produit sans combinaison (id_product_attribute = 0)
+//     filter = `filter[id_product]=${productId}&filter[id_product_attribute]=0`;
+//   }
 
-  const data   = await prestaFetch(`/stock_availables?${filter}&display=full`);
-  const stocks = data.stock_availables?.stock_available || [];
-  const liste  = Array.isArray(stocks) ? stocks : [stocks];
+//   const data   = await prestaFetch(`/stock_availables?${filter}&display=full`);
+//   const stocks = data.stock_availables?.stock_available || [];
+//   const liste  = Array.isArray(stocks) ? stocks : [stocks];
 
-  if (!liste.length) {
-    console.warn(`[getStockInfo] Pas de stock pour produit ${productId} combi ${combinationId}`);
-    return { stockId: null, currentQty: 0 };
-  }
+//   if (!liste.length) {
+//     console.warn(`[getStockInfo] Pas de stock pour produit ${productId} combi ${combinationId}`);
+//     return { stockId: null, currentQty: 0 };
+//   }
 
-  const stock = liste[0];
-  return {
-    stockId:    Number(extraireValeur(stock.id)),
-    currentQty: Number(extraireValeur(stock.quantity)),
-    productId:  Number(extraireValeur(stock.id_product)),
-    combiId:    Number(extraireValeur(stock.id_product_attribute)),
-  };
-}
+//   const stock = liste[0];
+//   return {
+//     stockId:    Number(extraireValeur(stock.id)),
+//     currentQty: Number(extraireValeur(stock.quantity)),
+//     productId:  Number(extraireValeur(stock.id_product)),
+//     combiId:    Number(extraireValeur(stock.id_product_attribute)),
+//   };
+// }
 
 /**
  * Décrémente le stock d'UN seul enregistrement stock_available.
@@ -370,36 +370,36 @@ async function getStockInfo(productId, combinationId) {
  * FIX : On ne décrémente QUE le stock ciblé (combinaison OU produit de base),
  * jamais les deux pour le même article commandé.
  */
-async function decrementStock(productId, combinationId, quantiteCommandee) {
-  try {
-    const { stockId, currentQty, combiId } = await getStockInfo(productId, combinationId);
+// async function decrementStock(productId, combinationId, quantiteCommandee) {
+//   try {
+//     const { stockId, currentQty, combiId } = await getStockInfo(productId, combinationId);
 
-    if (!stockId) {
-      console.warn(`[decrementStock] Pas de stockId pour produit ${productId} combi ${combinationId}`);
-      return;
-    }
+//     if (!stockId) {
+//       console.warn(`[decrementStock] Pas de stockId pour produit ${productId} combi ${combinationId}`);
+//       return;
+//     }
 
-    const newQty  = Math.max(0, currentQty - quantiteCommandee);
-    const xmlBody = `<?xml version="1.0" encoding="UTF-8"?>
-<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-  <stock_available>
-    <id>${stockId}</id>
-    <id_product>${productId}</id_product>
-    <id_product_attribute>${combiId}</id_product_attribute>
-    <quantity>${newQty}</quantity>
-    <depends_on_stock>0</depends_on_stock>
-    <out_of_stock>2</out_of_stock>
-  </stock_available>
-</prestashop>`;
+//     const newQty  = Math.max(0, currentQty - quantiteCommandee);
+//     const xmlBody = `<?xml version="1.0" encoding="UTF-8"?>
+// <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
+//   <stock_available>
+//     <id>${stockId}</id>
+//     <id_product>${productId}</id_product>
+//     <id_product_attribute>${combiId}</id_product_attribute>
+//     <quantity>${newQty}</quantity>
+//     <depends_on_stock>0</depends_on_stock>
+//     <out_of_stock>2</out_of_stock>
+//   </stock_available>
+// </prestashop>`;
 
-    await prestaWrite(`/stock_availables/${stockId}`, xmlBody, 'PUT');
-    console.log(
-      `[orderService] Stock produit ${productId} combi ${combiId}: ${currentQty} → ${newQty} (-${quantiteCommandee})`
-    );
-  } catch (err) {
-    console.error(`[decrementStock] Erreur produit ${productId} combi ${combinationId}:`, err.message);
-  }
-}
+//     await prestaWrite(`/stock_availables/${stockId}`, xmlBody, 'PUT');
+//     console.log(
+//       `[orderService] Stock produit ${productId} combi ${combiId}: ${currentQty} → ${newQty} (-${quantiteCommandee})`
+//     );
+//   } catch (err) {
+//     console.error(`[decrementStock] Erreur produit ${productId} combi ${combinationId}:`, err.message);
+//   }
+// }
 
 // ─── ORDER_HISTORIES ──────────────────────────────────────────
 

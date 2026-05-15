@@ -7,21 +7,53 @@
  *   - Aperçu des données parsées avant import
  *   - Lancement de l'import avec log en temps réel
  *   - Résumé final (succès / erreurs / skips)
+ *
+ * FIX : lecture fichier via ArrayBuffer + TextDecoder pour forcer UTF-8
+ *       et éviter le décodage Latin-1 implicite du navigateur sur file.text()
  */
 
 import { useState, useRef, useCallback } from 'react';
 import { runImport } from './importOrchestrator.js';
 
+// ─── Utilitaire lecture fichier texte ─────────────────────────
+
+/**
+ * Lit un fichier texte en forçant UTF-8.
+ * Si le résultat contient des séquences de remplacement (caractères Ã),
+ * retente en Latin-1 (windows-1252) qui est l'encodage legacy des CSV Excel FR.
+ *
+ * @param {File} file
+ * @returns {Promise<string>}
+ */
+async function readFileAsText(file) {
+  const buffer = await file.arrayBuffer();
+
+  // Tentative UTF-8 (cas nominal)
+  const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+
+  // Heuristique : si on voit des séquences typiques du Latin-1 mal décodé
+  // (Ã©=é, Ã =à, Ã¨=è…), on retente en windows-1252
+  if (/Ã[©¨ ¢£¤¥¦§¨©ª«¬­®¯°±]/.test(utf8)) {
+    try {
+      return new TextDecoder('windows-1252').decode(buffer);
+    } catch (_) {
+      // windows-1252 non supporté dans ce navigateur → on garde UTF-8
+    }
+  }
+
+  return utf8;
+}
+
 // ─── Composant principal ──────────────────────────────────────
 
 export default function ImportPage() {
-  const [files, setFiles]         = useState({ csv1: null, csv2: null, csv3: null, zip: null });
-  const [previews, setPreviews]   = useState({});
-  const [logs, setLogs]           = useState([]);
-  const [running, setRunning]     = useState(false);
-  const [done, setDone]           = useState(false);
-  const [stats, setStats]         = useState({ success: 0, warning: 0, error: 0, skip: 0 });
-  const logsEndRef                = useRef(null);
+  const [files, setFiles]       = useState({ csv1: null, csv2: null, csv3: null, zip: null });
+  const [previews, setPreviews] = useState({});
+  const [logs, setLogs]         = useState([]);
+  const [running, setRunning]   = useState(false);
+  const [done, setDone]         = useState(false);
+  const [stats, setStats]       = useState({ success: 0, warning: 0, error: 0, skip: 0 });
+  const logsEndRef              = useRef(null);
 
   // ── Gestion fichiers ────────────────────────────────────────
 
@@ -29,10 +61,10 @@ export default function ImportPage() {
     if (!file) return;
     setFiles((prev) => ({ ...prev, [key]: file }));
 
-    // Aperçu CSV
     if (key !== 'zip') {
       try {
-        const text  = await file.text();
+        // Utilise le lecteur robuste pour l'aperçu aussi
+        const text  = await readFileAsText(file);
         const lines = text.split('\n').slice(0, 6).join('\n');
         setPreviews((prev) => ({ ...prev, [key]: lines }));
       } catch {}
@@ -64,7 +96,17 @@ export default function ImportPage() {
     setDone(false);
 
     try {
-      await runImport(files, addLog);
+      // Pré-lecture des CSV avec décodage robuste
+      // On enrichit l'objet files avec les textes déjà décodés
+      // pour que importOrchestrator n'ait plus à appeler file.text()
+      const csv1Text = await readFileAsText(files.csv1);
+      const csv2Text = await readFileAsText(files.csv2);
+      const csv3Text = await readFileAsText(files.csv3);
+
+      await runImport(
+        { ...files, csv1Text, csv2Text, csv3Text },
+        addLog,
+      );
     } catch (err) {
       addLog(`❌ Erreur fatale : ${err.message}`, 'error');
     } finally {
@@ -105,7 +147,7 @@ export default function ImportPage() {
         />
         <FileZone
           label="CSV 3 — Clients & Commandes"
-          hint="date | nom | email | pwd | adresse | achat | etat"
+          hint="date,nom,email,pwd,adresse,achat,etat"
           accept=".csv,.txt"
           preview={previews.csv3}
           onChange={(f) => handleFileChange('csv3', f)}
@@ -146,10 +188,10 @@ export default function ImportPage() {
       {/* Stats */}
       {logs.length > 0 && (
         <div style={styles.statsRow}>
-          <Stat label="Succès"    value={stats.success} color="#22c55e" />
-          <Stat label="Ignorés"   value={stats.skip}    color="#3b82f6" />
-          <Stat label="Warnings"  value={stats.warning} color="#f59e0b" />
-          <Stat label="Erreurs"   value={stats.error}   color="#ef4444" />
+          <Stat label="Succès"   value={stats.success} color="#22c55e" />
+          <Stat label="Ignorés"  value={stats.skip}    color="#3b82f6" />
+          <Stat label="Warnings" value={stats.warning} color="#f59e0b" />
+          <Stat label="Erreurs"  value={stats.error}   color="#ef4444" />
         </div>
       )}
 

@@ -158,6 +158,63 @@ async function getTaxRate(taxRulesGroupId) {
   }
 }
 
+// ─── SPECIFIC PRICES (PROMOTIONS) ────────────────────────────
+
+async function getSpecificPrice(productId, combinationId = 0) {
+  try {
+    const data = await prestaFetch(
+      `/specific_prices?filter[id_product]=${productId}&display=full`
+    );
+
+    const list = data.specific_prices?.specific_price || [];
+    const arr  = Array.isArray(list) ? list : [list];
+
+    if (!arr.length) return null;
+
+    const now = new Date();
+
+    return arr.find(sp => {
+      const fromOk = !sp.from || new Date(sp.from) <= now;
+      const toOk   = !sp.to || new Date(sp.to) >= now;
+
+      const combOk =
+        Number(extraireValeur(sp.id_product_attribute)) === 0 ||
+        Number(extraireValeur(sp.id_product_attribute)) === combinationId;
+
+      return fromOk && toOk && combOk;
+    }) || null;
+
+  } catch (err) {
+    console.warn('[getSpecificPrice]', err.message);
+    return null;
+  }
+}
+
+function applySpecificPrice(basePrice, sp) {
+  if (!sp) return basePrice;
+
+  const priceFixed = parseFloat(sp.price || 0);
+
+  // 1. Prix fixe (priorité max)
+  if (priceFixed > 0) {
+    return priceFixed;
+  }
+
+  const reduction = parseFloat(sp.reduction || 0);
+
+  // 2. Réduction pourcentage
+  if (sp.reduction_type === 'percentage') {
+    return basePrice * (1 - reduction);
+  }
+
+  // 3. Réduction fixe
+  if (sp.reduction_type === 'amount') {
+    return basePrice - reduction;
+  }
+
+  return basePrice;
+}
+
 /**
  * Calcule le prix TTC depuis un prix HT et un taux TVA.
  * @param {number} priceHT
@@ -180,10 +237,18 @@ export async function getProducts() {
   // Charger les taux TVA en parallèle (dédupliqués grâce au cache)
   const results = await Promise.all(
     produits.map(async (p) => {
-      const priceHT          = parseFloat(extraireValeur(p.price) || 0);
-      const taxRulesGroupId  = Number(extraireValeur(p.id_tax_rules_group));
-      const taxRate          = await getTaxRate(taxRulesGroupId);
-      const priceTTC         = calculerPrixTTC(priceHT, taxRate);
+const priceHT = parseFloat(extraireValeur(p.price) || 0);
+const taxRulesGroupId = Number(extraireValeur(p.id_tax_rules_group));
+const taxRate = await getTaxRate(taxRulesGroupId);
+
+// ✔ récupérer combinaison 0 (produit de base)
+const sp = await getSpecificPrice(Number(extraireValeur(p.id)), 0);
+
+// ✔ appliquer promo AVANT TVA
+let finalHT = applySpecificPrice(priceHT, sp);
+
+// ✔ TTC final
+const priceTTC = calculerPrixTTC(finalHT, taxRate);
 
       return {
         id:                  Number(extraireValeur(p.id)),

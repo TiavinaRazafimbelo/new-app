@@ -59,26 +59,45 @@ export const CUSTOMER_COLUMNS = {
 };
 
 // Traduction des états de commande CSV → ID PrestaShop
+// Normalisation : minuscules sans accents pour comparaison robuste
 export const ORDER_STATE_MAP = {
   'paiement accepté':  2,   // Payment accepted
   'paiement accepte':  2,
-  'en preparation':    3,   // Processing in progress
-  'expedie':           4,   // Shipped
-  'livre':             5,   // Delivered
-  'annule':            6,   // Canceled
+  'en préparation':    3,   // Processing in progress
+  'en preparation':    3,
+  'expédié':           4,   // Shipped
+  'expedie':           4,
+  'livré':             5,   // Delivered
+  'livre':             5,
+  'annulé':            6,   // Canceled
+  'annule':            6,
   '':                  null, // Vide = panier abandonné (pas de commande)
 };
 
 // ─── Taux de TVA CSV → ID Tax Rule PrestaShop ────────────────
-// A ajuster selon les tax rules configurees dans votre PrestaShop
-// Verifiable via GET /api/tax_rule_groups
+//
+// IMPORTANT : vérifier les IDs réels via GET /api/tax_rule_groups
+// Les deux formes (virgule ET point) sont listées pour robustesse,
+// car les CSV peuvent utiliser l'un ou l'autre selon l'export.
+//
+// Pour ajouter un taux : ajouter les deux variantes "X,XX%" et "X.XX%"
+//
 export const TAX_RATE_TO_RULE_ID = {
-  '11,65%': 1,   // TVA standard malgache
+  // TVA ~11,65 % — groupe 1 (standard malgache)
+  '11,65%': 1,
   '11.65%': 1,
-  '5,60%':  2,   // TVA reduite
+
+  // TVA ~5,60 % — groupe 2 (réduite)
+  '5,60%':  2,
   '5.60%':  2,
+
+  // Exonéré
   '0%':     0,
-  '':       1,   // Defaut
+  '0,00%':  0,
+  '0.00%':  0,
+
+  // Défaut si colonne Taxe vide
+  '':       1,
 };
 
 // ─── Constantes PrestaShop ────────────────────────────────────
@@ -89,5 +108,5 @@ export const PRESTA_CONFIG = {
   ID_CURRENCY:     1,
   ID_CARRIER:      2,
   ID_COUNTRY:      8,   // France
-  DEFAULT_STATE:   1,   // Paiement en attente (defaut commandes importees)
+  DEFAULT_STATE:   2,   // Paiement accepté (cohérent avec ORDER_CONFIG dans orderService)
 };
