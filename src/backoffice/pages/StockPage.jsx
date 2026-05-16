@@ -2,165 +2,48 @@
  * StockPage.jsx
  * ─────────────────────────────────────────────────────────────
  * Page de gestion du stock — Backoffice PrestaShop
+ * Refactorisée pour utiliser stockService.js
  *
  * FONCTIONNALITÉS :
- *   1. Ajout de stock :
- *      - Sélection produit (avec référence)
- *      - Sélection combinaison si le produit en a
- *      - Saisie de la quantité à ajouter (ou retirer si négatif)
- *      - PUT /stock_availables/:id via l'API PrestaShop
+ *   1. Ajout/retrait de stock (delta ou valeur absolue)
+ *      - Si ligne stock existe → PUT /stock_availables/:id
+ *      - Si ligne manquante   → endpoint custom PrestaShop
+ *        (StockAvailable::updateQuantity)
  *
- *   2. Graphique d'évolution journalière :
- *      - Historique stocké en mémoire + sessionStorage (par session)
- *      - Snapshot du stock courant affiché sur graphique SVG maison
- *      - Sélection du produit/combinaison à observer
+ *   2. Graphique d'évolution avec snapshot manuel/auto
+ *      - Historique en sessionStorage
+ *      - Tableau des variations
  * ─────────────────────────────────────────────────────────────
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  getProductsForStock,
+  getCombinaisonsForStock,
+  getStocksForProduct,
+  findStockItem,
+  applyStockDelta,
+  setAbsoluteStock,
+  chargerHistorique,
+  sauvegarderHistorique,
+  cleHistorique,
+  ajouterPointHistorique,
+} from '../services/stockService';
 import './StockPage.css';
 
-// ─── Config API ───────────────────────────────────────────────
-const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;
-const BASE_URL = '/api';
+// ─── SVG Sparkline ────────────────────────────────────────────
 
-function getAuthHeader() {
-  return 'Basic ' + btoa(`${API_KEY}:`);
-}
-
-// ─── Helpers XML ──────────────────────────────────────────────
-async function prestaGet(endpoint) {
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    headers: { Authorization: getAuthHeader(), Accept: 'application/xml' },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} — ${endpoint}`);
-  return res.text();
-}
-
-async function prestaWrite(endpoint, xml, method = 'PUT') {
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    method,
-    headers: {
-      Authorization:  getAuthHeader(),
-      'Content-Type': 'application/xml',
-      Accept:         'application/xml',
-    },
-    body: xml,
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
-  return text;
-}
-
-function xmlVal(xml, tag) {
-  const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?<\\/${tag}>`, 's'));
-  return m ? m[1].trim() : '';
-}
-
-function xmlValLang(xml, tag, langId = 1) {
-  // Try language tag first
-  const langRe = new RegExp(`<${tag}[^>]*>[\\s\\S]*?<language id="${langId}"[^>]*>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?<\\/language>`, 's');
-  const m = xml.match(langRe);
-  if (m) return m[1].trim();
-  return xmlVal(xml, tag);
-}
-
-function parseProducts(xml) {
-  const blocks = [...xml.matchAll(/<product[^>]*>([\s\S]*?)<\/product>/g)];
-  return blocks.map((b) => {
-    const inner = b[1];
-    return {
-      id:        xmlVal(inner, 'id'),
-      name:      xmlValLang(inner, 'name') || xmlVal(inner, 'name'),
-      reference: xmlVal(inner, 'reference'),
-    };
-  }).filter((p) => p.id);
-}
-
-function parseCombinations(xml) {
-  const blocks = [...xml.matchAll(/<combination[^>]*>([\s\S]*?)<\/combination>/g)];
-  return blocks.map((b) => {
-    const inner = b[1];
-    return {
-      id:        xmlVal(inner, 'id'),
-      reference: xmlVal(inner, 'reference'),
-      // Extract option values names if present
-    };
-  }).filter((c) => c.id);
-}
-
-function parseStockAvailables(xml) {
-  const blocks = [...xml.matchAll(/<stock_available[^>]*>([\s\S]*?)<\/stock_available>/g)];
-  return blocks.map((b) => {
-    const inner = b[1];
-    return {
-      id:                   xmlVal(inner, 'id'),
-      id_product:           xmlVal(inner, 'id_product'),
-      id_product_attribute: xmlVal(inner, 'id_product_attribute'),
-      quantity:             parseInt(xmlVal(inner, 'quantity') || '0'),
-      id_shop:              xmlVal(inner, 'id_shop'),
-    };
-  }).filter((s) => s.id);
-}
-
-// ─── Build PUT XML pour stock_available ──────────────────────
-function buildStockXml(stockItem, newQty) {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-  <stock_available>
-    <id><![CDATA[${stockItem.id}]]></id>
-    <id_product><![CDATA[${stockItem.id_product}]]></id_product>
-    <id_product_attribute><![CDATA[${stockItem.id_product_attribute}]]></id_product_attribute>
-    <id_shop><![CDATA[${stockItem.id_shop || 1}]]></id_shop>
-    <id_shop_group><![CDATA[0]]></id_shop_group>
-    <quantity><![CDATA[${newQty}]]></quantity>
-    <depends_on_stock><![CDATA[0]]></depends_on_stock>
-    <out_of_stock><![CDATA[2]]></out_of_stock>
-  </stock_available>
-</prestashop>`;
-}
-
-// ─── Historique (sessionStorage) ──────────────────────────────
-const HISTORY_KEY = 'stock_history_v1';
-
-function loadHistory() {
-  try {
-    const raw = sessionStorage.getItem(HISTORY_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function saveHistory(h) {
-  try { sessionStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch {}
-}
-
-/** Clé unique pour un produit/combinaison */
-function histKey(productId, combiId) {
-  return `${productId}_${combiId || '0'}`;
-}
-
-/** Ajoute un point dans l'historique */
-function addHistoryPoint(history, productId, combiId, qty) {
-  const key = histKey(productId, combiId);
-  const now  = new Date();
-  const label = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-  const points = history[key] || [];
-  const updated = [...points, { label, qty, ts: now.toISOString() }].slice(-20); // max 20 points
-  return { ...history, [key]: updated };
-}
-
-// ─── SVG Sparkline chart ──────────────────────────────────────
 function StockChart({ points, color = '#2563a8' }) {
   if (!points || points.length < 2) {
     return (
       <div className="chart-empty">
-        <span>📊</span>
-        <p>Ajoutez du stock pour voir l'évolution</p>
+        <span className="chart-empty__icon">📊</span>
+        <p>Sélectionnez un produit et faites un snapshot pour voir l'évolution</p>
       </div>
     );
   }
 
-  const W = 560, H = 180, PAD = { t: 20, r: 20, b: 40, l: 55 };
+  const W = 560, H = 180, PAD = { t: 20, r: 20, b: 40, l: 60 };
   const innerW = W - PAD.l - PAD.r;
   const innerH = H - PAD.t - PAD.b;
 
@@ -175,19 +58,18 @@ function StockChart({ points, color = '#2563a8' }) {
   const pathD = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(p.qty).toFixed(1)}`)
     .join(' ');
-
   const areaD =
     `${pathD} L ${toX(points.length - 1).toFixed(1)} ${(PAD.t + innerH).toFixed(1)} L ${PAD.l} ${(PAD.t + innerH).toFixed(1)} Z`;
 
-  // Y axis ticks
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
     y:   toY(minQ + f * range),
     val: Math.round(minQ + f * range),
   }));
 
-  // X labels (every nth)
-  const step  = Math.max(1, Math.ceil(points.length / 6));
-  const xLabels = points.filter((_, i) => i % step === 0 || i === points.length - 1);
+  const step    = Math.max(1, Math.ceil(points.length / 6));
+  const xLabels = points
+    .map((p, i) => ({ p, i }))
+    .filter(({ i }) => i % step === 0 || i === points.length - 1);
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="stock-chart-svg" preserveAspectRatio="xMidYMid meet">
@@ -202,7 +84,6 @@ function StockChart({ points, color = '#2563a8' }) {
         </filter>
       </defs>
 
-      {/* Grid */}
       {yTicks.map((t, i) => (
         <g key={i}>
           <line x1={PAD.l} y1={t.y} x2={W - PAD.r} y2={t.y}
@@ -214,79 +95,71 @@ function StockChart({ points, color = '#2563a8' }) {
         </g>
       ))}
 
-      {/* Area */}
       <path d={areaD} fill="url(#areaGrad)" />
-
-      {/* Line */}
       <path d={pathD} fill="none" stroke={color} strokeWidth="2.2"
         strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)" />
 
-      {/* Dots */}
       {points.map((p, i) => (
         <circle key={i} cx={toX(i)} cy={toY(p.qty)} r="3.5"
           fill="#fff" stroke={color} strokeWidth="2" />
       ))}
 
-      {/* X labels */}
-      {xLabels.map((p, i) => {
-        const origIdx = points.indexOf(p);
-        return (
-          <text key={i} x={toX(origIdx)} y={H - 8} textAnchor="middle"
-            fontSize="10" fill="#6b6860" fontFamily="'IBM Plex Mono', monospace">
-            {p.label}
-          </text>
-        );
-      })}
+      {xLabels.map(({ p, i }) => (
+        <text key={i} x={toX(i)} y={H - 8} textAnchor="middle"
+          fontSize="10" fill="#6b6860" fontFamily="'IBM Plex Mono', monospace">
+          {p.label}
+        </text>
+      ))}
     </svg>
   );
 }
 
 // ─── Composant principal ──────────────────────────────────────
+
 export default function StockPage() {
-  const [products,     setProducts]     = useState([]);
-  const [selectedProd, setSelectedProd] = useState('');
-  const [combinations, setCombinations] = useState([]);   // combis du produit sélectionné
-  const [selectedCombi,setSelectedCombi]= useState('');   // '' = produit de base
-  const [stocks,       setStocks]       = useState([]);   // stock_availables du produit
-  const [currentStock, setCurrentStock] = useState(null); // stock_available sélectionné
-  const [deltaQty,     setDeltaQty]     = useState('');   // delta à ajouter
-  const [loading,      setLoading]      = useState(false);
-  const [loadingProds, setLoadingProds] = useState(true);
-  const [loadingCombi, setLoadingCombi] = useState(false);
-  const [saving,       setSaving]       = useState(false);
-  const [toast,        setToast]        = useState(null); // { msg, type }
+  // ── Section ajout de stock ──────────────────────────────────
+  const [products,      setProducts]      = useState([]);
+  const [selectedProd,  setSelectedProd]  = useState('');
+  const [combinations,  setCombinations]  = useState([]);
+  const [selectedCombi, setSelectedCombi] = useState('');
+  const [stocks,        setStocks]        = useState([]);
+  const [currentStock,  setCurrentStock]  = useState(null);
+  const [modeInput,     setModeInput]     = useState('delta'); // 'delta' | 'absolu'
+  const [deltaQty,      setDeltaQty]      = useState('');
+  const [absolQty,      setAbsolQty]      = useState('');
 
-  // Graphe
-  const [chartProd,    setChartProd]    = useState('');
-  const [chartCombi,   setChartCombi,]  = useState('');
-  const [chartCombis,  setChartCombis]  = useState([]);
-  const [history,      setHistory]      = useState(loadHistory);
-  const [chartStock,   setChartStock]   = useState(null);
-  const [loadingChart, setLoadingChart] = useState(false);
+  const [loadingProds,  setLoadingProds]  = useState(true);
+  const [loadingCombi,  setLoadingCombi]  = useState(false);
+  const [saving,        setSaving]        = useState(false);
 
-  const toastTimer = useRef(null);
+  // ── Section graphique ───────────────────────────────────────
+  const [chartProd,     setChartProd]     = useState('');
+  const [chartCombi,    setChartCombi]    = useState('');
+  const [chartCombis,   setChartCombis]   = useState([]);
+  const [chartStock,    setChartStock]    = useState(null);
+  const [loadingChart,  setLoadingChart]  = useState(false);
+  const [history,       setHistory]       = useState(chargerHistorique);
 
-  // ── Afficher un toast ────────────────────────────────────────
+  // ── Toast ───────────────────────────────────────────────────
+  const [toast, setToast]     = useState(null);
+  const toastTimer            = useRef(null);
+
   function showToast(msg, type = 'succes') {
     setToast({ msg, type });
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3500);
   }
 
-  // ── Charger tous les produits ────────────────────────────────
+  // ── Charger les produits ────────────────────────────────────
   useEffect(() => {
     setLoadingProds(true);
-    prestaGet('/products?display=[id,name,reference]')
-      .then((xml) => {
-        const prods = parseProducts(xml);
-        prods.sort((a, b) => a.name.localeCompare(b.name));
-        setProducts(prods);
-      })
+    getProductsForStock()
+      .then(setProducts)
       .catch((err) => showToast(`Chargement produits : ${err.message}`, 'erreur'))
       .finally(() => setLoadingProds(false));
   }, []);
 
-  // ── Chargement combinaisons + stocks quand produit change ────
+  // ── Produit sélectionné → charger combis + stocks ───────────
   useEffect(() => {
     if (!selectedProd) {
       setCombinations([]);
@@ -302,60 +175,66 @@ export default function StockPage() {
     setCurrentStock(null);
 
     Promise.all([
-      prestaGet(`/combinations?filter[id_product]=${selectedProd}&display=[id,reference]`),
-      prestaGet(`/stock_availables?filter[id_product]=${selectedProd}&display=full`),
+      getCombinaisonsForStock(selectedProd),
+      getStocksForProduct(selectedProd),
     ])
-      .then(([combiXml, stockXml]) => {
-        const combis = parseCombinations(combiXml);
-        const stks   = parseStockAvailables(stockXml);
+      .then(([combis, stks]) => {
         setCombinations(combis);
         setStocks(stks);
-
-        // Stock de base (id_product_attribute = 0)
-        const base = stks.find((s) => s.id_product_attribute === '0' || s.id_product_attribute === 0);
-        setCurrentStock(base || null);
+        // Stock de base par défaut
+        setCurrentStock(findStockItem(stks, '0'));
       })
       .catch((err) => showToast(`Chargement : ${err.message}`, 'erreur'))
       .finally(() => setLoadingCombi(false));
   }, [selectedProd]);
 
-  // ── Quand combinaison change, mettre à jour currentStock ─────
+  // ── Combinaison change → mettre à jour currentStock ─────────
   useEffect(() => {
     if (!selectedProd) return;
-    const attrId = selectedCombi || '0';
-    const match  = stocks.find(
-      (s) => String(s.id_product_attribute) === String(attrId)
-    );
-    setCurrentStock(match || null);
+    setCurrentStock(findStockItem(stocks, selectedCombi));
   }, [selectedCombi, stocks]);
 
-  // ── Soumettre l'ajout de stock ───────────────────────────────
-  async function handleAddStock(e) {
+  // ── Soumettre la modification de stock ──────────────────────
+  async function handleSubmitStock(e) {
     e.preventDefault();
-    const delta = parseInt(deltaQty);
-    if (isNaN(delta) || delta === 0) { showToast('Quantité invalide', 'erreur'); return; }
-    if (!currentStock) { showToast('Stock introuvable pour ce produit/combinaison', 'erreur'); return; }
+
+    if (!selectedProd) { showToast('Sélectionnez un produit', 'erreur'); return; }
 
     setSaving(true);
     try {
-      const newQty = currentStock.quantity + delta;
-      if (newQty < 0) { showToast('Le stock ne peut pas être négatif', 'erreur'); return; }
+      let result;
 
-      const xml = buildStockXml(currentStock, newQty);
-      await prestaWrite(`/stock_availables/${currentStock.id}`, xml);
+      if (modeInput === 'delta') {
+        const delta = parseInt(deltaQty);
+        if (isNaN(delta) || delta === 0) throw new Error('Quantité invalide (ne peut pas être 0)');
+        result = await applyStockDelta(currentStock, selectedProd, selectedCombi, delta);
+      } else {
+        const target = parseInt(absolQty);
+        if (isNaN(target) || target < 0) throw new Error('Quantité absolue invalide');
+        result = await setAbsoluteStock(currentStock, selectedProd, selectedCombi, target);
+      }
 
-      // Mise à jour locale
-      const updated = { ...currentStock, quantity: newQty };
-      setCurrentStock(updated);
-      setStocks((prev) => prev.map((s) => s.id === currentStock.id ? updated : s));
+      const { newQty, createdNew } = result;
 
-      // Historique
-      const newHistory = addHistoryPoint(history, selectedProd, selectedCombi, newQty);
-      setHistory(newHistory);
-      saveHistory(newHistory);
+      // Rafraîchir les stocks locaux
+      const stksRefresh = await getStocksForProduct(selectedProd);
+      setStocks(stksRefresh);
+      setCurrentStock(findStockItem(stksRefresh, selectedCombi));
 
-      showToast(`Stock mis à jour → ${newQty} unités`, 'succes');
+      // Ajouter au graphique si même produit/combi observé
+      if (chartProd === selectedProd && chartCombi === selectedCombi) {
+        const newHistory = ajouterPointHistorique(history, selectedProd, selectedCombi, newQty);
+        setHistory(newHistory);
+        sauvegarderHistorique(newHistory);
+        setChartStock(findStockItem(stksRefresh, selectedCombi));
+      }
+
+      showToast(
+        `${createdNew ? 'Ligne créée — ' : ''}Stock mis à jour → ${newQty} unités`,
+        'succes'
+      );
       setDeltaQty('');
+      setAbsolQty('');
     } catch (err) {
       showToast(`Erreur : ${err.message}`, 'erreur');
     } finally {
@@ -363,21 +242,19 @@ export default function StockPage() {
     }
   }
 
-  // ── Snapshot stock (pour le graphe) ─────────────────────────
+  // ── Snapshot graphique ──────────────────────────────────────
   async function snapshotChartStock() {
     if (!chartProd) return;
     setLoadingChart(true);
     try {
-      const xml  = await prestaGet(`/stock_availables?filter[id_product]=${chartProd}&display=full`);
-      const stks = parseStockAvailables(xml);
-      const attrId = chartCombi || '0';
-      const match  = stks.find((s) => String(s.id_product_attribute) === String(attrId));
-      if (!match) { showToast('Aucun stock trouvé', 'erreur'); return; }
+      const stks  = await getStocksForProduct(chartProd);
+      const match = findStockItem(stks, chartCombi);
+      if (!match) { showToast('Aucun stock trouvé pour ce produit/combinaison', 'erreur'); return; }
 
       setChartStock(match);
-      const newHistory = addHistoryPoint(history, chartProd, chartCombi, match.quantity);
+      const newHistory = ajouterPointHistorique(history, chartProd, chartCombi, match.quantity);
       setHistory(newHistory);
-      saveHistory(newHistory);
+      sauvegarderHistorique(newHistory);
     } catch (err) {
       showToast(`Snapshot : ${err.message}`, 'erreur');
     } finally {
@@ -385,50 +262,51 @@ export default function StockPage() {
     }
   }
 
-  // ── Charger combis pour le graphe ───────────────────────────
+  // ── Combis pour le graphique ────────────────────────────────
   useEffect(() => {
-    if (!chartProd) { setChartCombis([]); setChartCombi(''); return; }
-    prestaGet(`/combinations?filter[id_product]=${chartProd}&display=[id,reference]`)
-      .then((xml) => {
-        setChartCombis(parseCombinations(xml));
-        setChartCombi('');
-      })
+    if (!chartProd) { setChartCombis([]); setChartCombi(''); setChartStock(null); return; }
+    getCombinaisonsForStock(chartProd)
+      .then((c) => { setChartCombis(c); setChartCombi(''); })
       .catch(() => setChartCombis([]));
   }, [chartProd]);
 
-  // ── Snapshot auto quand chartProd/chartCombi change ──────────
+  // ── Snapshot auto quand chartProd/chartCombi change ─────────
   useEffect(() => {
     if (chartProd) snapshotChartStock();
   }, [chartProd, chartCombi]);
 
-  const chartPoints = history[histKey(chartProd, chartCombi)] || [];
-  const selectedProdObj  = products.find((p) => p.id === selectedProd);
-  const selectedCombiObj = combinations.find((c) => c.id === selectedCombi);
+  const chartPoints = history[cleHistorique(chartProd, chartCombi)] || [];
 
-  // ─── Render ──────────────────────────────────────────────────
+  // Calcul aperçu delta
+  const deltaPreview = (() => {
+    if (modeInput === 'delta' && deltaQty !== '' && currentStock !== null) {
+      const d = parseInt(deltaQty) || 0;
+      if (d !== 0) return (currentStock?.quantity ?? 0) + d;
+    }
+    return null;
+  })();
+
+  // ─── Render ────────────────────────────────────────────────
   return (
     <div className="stock-page">
 
-      {/* ── En-tête ─────────────────────────────────────────── */}
+      {/* En-tête */}
       <div className="stock-entete">
         <div className="stock-entete__titre">
-          <span className="stock-entete__icone"></span>
-          <div>
-            <h2>Gestion du stock</h2>
-            <p className="stock-entete__sub">Ajustez les niveaux et suivez l'évolution</p>
-          </div>
+          <h2>Gestion du stock</h2>
+          <p className="stock-entete__sub">Ajustez les niveaux et suivez l'évolution</p>
         </div>
       </div>
 
       <div className="stock-grid">
 
-        {/* ── Panneau gauche : ajout de stock ─────────────── */}
-        <section className="stock-card stock-card--form">
+        {/* ── Panneau gauche : ajout / retrait ─────────────── */}
+        <section className="stock-card">
           <div className="stock-card__header">
             <h3>Ajout / Retrait de stock</h3>
           </div>
 
-          <form onSubmit={handleAddStock} className="stock-form">
+          <form onSubmit={handleSubmitStock} className="stock-form">
 
             {/* Produit */}
             <div className="form-groupe">
@@ -472,78 +350,125 @@ export default function StockPage() {
                   <option value="">— Produit de base —</option>
                   {combinations.map((c) => (
                     <option key={c.id} value={c.id}>
-                      Combinaison #{c.id}{c.reference ? ` — ${c.reference}` : ''}
+                      #{c.id}  — Réf: {c.reference}
                     </option>
                   ))}
                 </select>
               )}
             </div>
 
-            {/* Stock actuel */}
-            {currentStock && (
-              <div className="stock-actuel">
-                <span className="stock-actuel__label">Stock actuel</span>
-                <span className="stock-actuel__val">{currentStock.quantity}</span>
-                <span className="stock-actuel__unit">unités</span>
+            {/* Stock actuel + statut de la ligne */}
+            {selectedProd && !loadingCombi && (
+              <div className={`stock-actuel ${currentStock ? '' : 'stock-actuel--absent'}`}>
+                {currentStock ? (
+                  <>
+                    <span className="stock-actuel__label">Stock actuel</span>
+                    <span className="stock-actuel__val">{currentStock.quantity}</span>
+                    <span className="stock-actuel__unit">unités</span>
+                  </>
+                ) : (
+                  <div className="stock-absent">
+                    <span className="stock-absent__icon">⚠</span>
+                    <div>
+                      <strong>Aucune ligne de stock</strong>
+                      <p>La ligne sera créée automatiquement via l'endpoint PrestaShop</p>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {selectedProd && !loadingCombi && !currentStock && (
-              <div className="stock-warning">
-                ⚠️ Aucune ligne de stock trouvée pour cette sélection
-              </div>
-            )}
-
-            {/* Delta quantité */}
+            {/* Mode : delta ou absolu */}
             <div className="form-groupe">
-              <label className="form-label">
-                Quantité à ajouter
-                <span className="form-label__hint"> (négatif pour retirer)</span>
-              </label>
-              <div className="delta-input-wrapper">
+              <label className="form-label">Mode de saisie</label>
+              <div className="mode-toggle">
                 <button
                   type="button"
-                  className="delta-btn delta-btn--minus"
-                  onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) - 1))}
-                >−</button>
+                  className={`mode-btn ${modeInput === 'delta' ? 'mode-btn--active' : ''}`}
+                  onClick={() => setModeInput('delta')}
+                >
+                  ± Delta
+                </button>
+                <button
+                  type="button"
+                  className={`mode-btn ${modeInput === 'absolu' ? 'mode-btn--active' : ''}`}
+                  onClick={() => setModeInput('absolu')}
+                >
+                  = Valeur absolue
+                </button>
+              </div>
+            </div>
+
+            {/* Input quantité */}
+            {modeInput === 'delta' ? (
+              <div className="form-groupe">
+                <label className="form-label">
+                  Quantité à ajouter
+                  <span className="form-label__hint"> (négatif pour retirer)</span>
+                </label>
+                <div className="delta-input-wrapper">
+                  <button
+                    type="button"
+                    className="delta-btn"
+                    onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) - 1))}
+                  >−</button>
+                  <input
+                    type="number"
+                    className="form-input delta-input"
+                    value={deltaQty}
+                    onChange={(e) => setDeltaQty(e.target.value)}
+                    placeholder="ex : 50"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="delta-btn"
+                    onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) + 1))}
+                  >+</button>
+                </div>
+                {deltaPreview !== null && (
+                  <div className={`delta-preview ${deltaPreview < (currentStock?.quantity ?? 0) ? 'delta-preview--down' : 'delta-preview--up'}`}>
+                    {deltaPreview < (currentStock?.quantity ?? 0) ? '▼' : '▲'}{' '}
+                    Nouveau stock : <strong>{deltaPreview}</strong>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="form-groupe">
+                <label className="form-label">Quantité absolue cible</label>
                 <input
                   type="number"
-                  className="form-input delta-input"
-                  value={deltaQty}
-                  onChange={(e) => setDeltaQty(e.target.value)}
-                  placeholder="ex: 50"
+                  min="0"
+                  className="form-input"
+                  value={absolQty}
+                  onChange={(e) => setAbsolQty(e.target.value)}
+                  placeholder="ex : 300"
                   required
                 />
-                <button
-                  type="button"
-                  className="delta-btn delta-btn--plus"
-                  onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) + 1))}
-                >+</button>
+                {absolQty !== '' && currentStock && (
+                  <div className={`delta-preview ${Number(absolQty) < currentStock.quantity ? 'delta-preview--down' : 'delta-preview--up'}`}>
+                    {Number(absolQty) < currentStock.quantity ? '▼' : '▲'}{' '}
+                    {currentStock.quantity} → <strong>{absolQty}</strong>
+                  </div>
+                )}
               </div>
-              {deltaQty !== '' && currentStock && (
-                <div className="delta-preview">
-                  {parseInt(deltaQty) > 0 ? '▲' : '▼'} Nouveau stock :{' '}
-                  <strong>{currentStock.quantity + (parseInt(deltaQty) || 0)}</strong>
-                </div>
-              )}
-            </div>
+            )}
 
             <button
               type="submit"
               className={`btn-submit ${saving ? 'btn-submit--loading' : ''}`}
-              disabled={saving || !selectedProd || !currentStock}
+              disabled={saving || !selectedProd}
             >
-              {saving ? (
-                <><span className="btn-spinner" /> Mise à jour…</>
-              ) : (
-                <>✓ Appliquer la modification</>
-              )}
+              {saving
+                ? <><span className="btn-spinner" /> Mise à jour…</>
+                : <>✓ Appliquer la modification</>
+              }
             </button>
           </form>
         </section>
 
         {/* ── Panneau droit : graphique ────────────────────── */}
-        <section className="stock-card stock-card--chart">
+        <section className="stock-card">
           <div className="stock-card__header">
             <h3>Évolution du stock</h3>
             <button
@@ -552,7 +477,11 @@ export default function StockPage() {
               disabled={!chartProd || loadingChart}
               title="Capturer le stock actuel"
             >
-              {loadingChart ? <span className="btn-spinner btn-spinner--sm" /> : '📸'} Snapshot
+              {loadingChart
+                ? <span className="btn-spinner btn-spinner--sm" />
+                : '📸'
+              }{' '}
+              Snapshot
             </button>
           </div>
 
@@ -577,33 +506,33 @@ export default function StockPage() {
               onChange={(e) => setChartCombi(e.target.value)}
               disabled={chartCombis.length === 0}
             >
-              <option value="">— Base —</option>
+              <option value="">— Produit de base —</option>
               {chartCombis.map((c) => (
                 <option key={c.id} value={c.id}>
-                  Combinaison #{c.id}{c.reference ? ` — ${c.reference}` : ''}
+                  {c.label}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Graphe */}
+          {/* Méta stock actuel */}
+          {chartStock && (
+            <div className="chart-meta">
+              <span className="chart-meta__qty">{chartStock.quantity}</span>
+              <span className="chart-meta__label">unités actuellement</span>
+              {chartPoints.length > 1 && (() => {
+                const diff = chartPoints[chartPoints.length - 1].qty - chartPoints[0].qty;
+                return (
+                  <span className={`chart-meta__delta ${diff >= 0 ? 'chart-meta__delta--up' : 'chart-meta__delta--down'}`}>
+                    {diff >= 0 ? '▲' : '▼'} {Math.abs(diff)}
+                  </span>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* SVG Chart */}
           <div className="chart-area">
-            {chartStock && (
-              <div className="chart-meta">
-                <span className="chart-meta__qty">{chartStock.quantity}</span>
-                <span className="chart-meta__label">unités actuellement</span>
-                {chartPoints.length > 1 && (() => {
-                  const first = chartPoints[0].qty;
-                  const last  = chartPoints[chartPoints.length - 1].qty;
-                  const diff  = last - first;
-                  return (
-                    <span className={`chart-meta__delta ${diff >= 0 ? 'chart-meta__delta--up' : 'chart-meta__delta--down'}`}>
-                      {diff >= 0 ? '▲' : '▼'} {Math.abs(diff)}
-                    </span>
-                  );
-                })()}
-              </div>
-            )}
             <StockChart points={chartPoints} />
           </div>
 
@@ -621,7 +550,7 @@ export default function StockPage() {
                 <tbody>
                   {[...chartPoints].reverse().map((p, i, arr) => {
                     const prev = arr[i + 1];
-                    const diff = prev ? p.qty - prev.qty : null;
+                    const diff = prev != null ? p.qty - prev.qty : null;
                     return (
                       <tr key={i}>
                         <td className="history-time">{p.label}</td>
@@ -644,7 +573,7 @@ export default function StockPage() {
 
       </div>
 
-      {/* ── Toast ──────────────────────────────────────────── */}
+      {/* Toast */}
       {toast && (
         <div className={`toast toast--${toast.type} toast--visible`}>
           <span className="toast__icone">{toast.type === 'succes' ? '✓' : '✕'}</span>

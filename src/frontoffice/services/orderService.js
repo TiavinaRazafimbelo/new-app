@@ -1,17 +1,21 @@
 /**
- * orderService.js — v3
+ * orderService.js — v4
  * ─────────────────────────────────────────────────────────────
- * CORRECTIONS v3 :
+ * NOUVEAUTÉ v4 :
  *
- *   FIX STOCK : La décrémentation était doublée.
- *     Cause : decrementStock était appelée avec combinationId=0 ET combinationId=X
- *     pour le même produit, ce qui mettait à jour le stock "base" (id_product_attribute=0)
- *     deux fois. Désormais, on ne décrémente QUE le stock de la combinaison
- *     si elle existe (id_product_attribute > 0), ou QUE le stock de base sinon.
+ *   Le cart PS est maintenant créé/mis à jour en temps réel par CartContext
+ *   dès que l'utilisateur modifie son panier (client connecté).
  *
- *   FIX SOUS-TOTAUX : normaliserLignesCommande calculait total_price_tax_incl
- *     qui n'existe pas dans les order_rows de l'API PrestaShop.
- *     → On calcule le total = unit_price_tax_incl × product_quantity côté JS.
+ *   createFullOrder reçoit désormais un paramètre optionnel `existingCartId` :
+ *     - Si fourni (client connecté) → on réutilise ce cart PS, pas de recréation.
+ *     - Si absent (guest/anon)     → on crée le cart comme avant.
+ *
+ *   Le reste du flux est identique :
+ *     Étape 1 : Customer & secure_key
+ *     Étape 2 : Adresse
+ *     Étape 3 : Cart (réutilisé OU créé si guest)
+ *     Étape 4 : POST /orders
+ *     Étape 5 : Forcer statut via order_histories
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -25,14 +29,12 @@ export const ORDER_CONFIG = {
   PAYMENT_LABEL:       'CashOnDelivery',
   SHIPPING_COST:       0,
   ID_COUNTRY_FRANCE:   8,
-  ID_CARRIER:          0,
+  ID_CARRIER:          2,
   ID_LANG:             1,
   ID_CURRENCY:         1,
   ID_SHOP:             1,
   ID_SHOP_GROUP:       1,
 };
-
-// ─── Config API ───────────────────────────────────────────────
 
 const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;
 const BASE_URL = '/api';
@@ -53,33 +55,23 @@ const parser = new XMLParser({
      'cart_row', 'product', 'stock_available', 'customer', 'error'].includes(tagName),
 });
 
-// ─── Fetch ────────────────────────────────────────────────────
+// ─── Fetch helpers ────────────────────────────────────────────
 
-async function prestaFetch(endpoint, opts = {}) {
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    headers: {
-      Authorization: getAuthHeader(),
-      Accept:        'application/xml',
-      ...(opts.headers || {}),
-    },
-    ...opts,
+async function prestaFetch(endpoint) {
+  const res = await fetch(`${BASE_URL}${endpoint}`, {
+    headers: { Authorization: getAuthHeader(), Accept: 'application/xml' },
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`[prestaFetch] ${endpoint} -> HTTP ${response.status}: ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`GET ${endpoint} → ${res.status}: ${txt.slice(0, 300)}`);
   }
-
-  const xmlText = await response.text();
-  if (import.meta.env.DEV) console.debug(`[prestaFetch] ${endpoint}\n`, xmlText.slice(0, 500));
-  const parsed = parser.parse(xmlText);
+  const xml    = await res.text();
+  const parsed = parser.parse(xml);
   return parsed.prestashop || parsed;
 }
 
 async function prestaWrite(endpoint, xmlBody, method = 'POST', context = {}) {
-  if (import.meta.env.DEV) console.debug(`[prestaWrite] ${method} ${endpoint}\n`, xmlBody.slice(0, 600));
-
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
+  const res = await fetch(`${BASE_URL}${endpoint}`, {
     method,
     headers: {
       Authorization:  getAuthHeader(),
@@ -89,49 +81,40 @@ async function prestaWrite(endpoint, xmlBody, method = 'POST', context = {}) {
     body: xmlBody,
   });
 
-  const xmlText = await response.text();
-  if (import.meta.env.DEV) console.debug(`[prestaWrite] response HTTP ${response.status}\n`, xmlText.slice(0, 600));
+  const xmlText = await res.text();
 
-  if (response.ok) {
+  if (res.ok) {
     const parsed = parser.parse(xmlText);
     return parsed.prestashop || parsed;
   }
 
   // HTTP 500 sur POST /orders → tentative de récupération via fallback
   if (endpoint === '/orders' && method === 'POST') {
-    let ps;
-    try { ps = (parser.parse(xmlText))?.prestashop || parser.parse(xmlText); } catch (_) { ps = {}; }
-
-    const errors  = ps?.errors?.error || [];
-    const errList = Array.isArray(errors) ? errors : [errors];
-    errList.forEach((e) => console.warn(`[prestaWrite] PS error: ${extraireValeur(e?.message)}`));
+    let ps = {};
+    try { ps = parser.parse(xmlText)?.prestashop || {}; } catch (_) {}
 
     const orderInError = ps?.order?.[0] || ps?.order;
     const idInError    = orderInError ? Number(extraireValeur(orderInError?.id)) : 0;
     if (idInError > 0) {
-      console.warn(`[prestaWrite] HTTP 500 mais order ID ${idInError} trouvé. Poursuite.`);
+      console.warn(`[prestaWrite] HTTP 500 mais order ID ${idInError} présent. Poursuite.`);
       return ps;
     }
 
     if (context.cartId) {
-      console.warn(`[prestaWrite] Fallback GET /orders?filter[id_cart]=${context.cartId}`);
       try {
         const fb     = await prestaFetch(`/orders?filter[id_cart]=${context.cartId}&display=full`);
         const orders = fb.orders?.order || [];
         const liste  = Array.isArray(orders) ? orders : [orders];
-        if (liste.length > 0) {
-          console.warn(`[prestaWrite] Commande retrouvée via fallback. ID=${extraireValeur(liste[0]?.id)}`);
-          return { order: liste };
-        }
+        if (liste.length > 0) return { order: liste };
       } catch (fbErr) {
         console.error('[prestaWrite] Fallback GET échoué:', fbErr.message);
       }
     }
 
-    throw new Error(`[prestaWrite] POST /orders HTTP 500 irrecuperable: ${xmlText.slice(0, 400)}`);
+    throw new Error(`POST /orders HTTP 500: ${xmlText.slice(0, 400)}`);
   }
 
-  throw new Error(`[prestaWrite] ${method} ${endpoint} -> HTTP ${response.status}: ${xmlText.slice(0, 400)}`);
+  throw new Error(`${method} ${endpoint} → ${res.status}: ${xmlText.slice(0, 400)}`);
 }
 
 // ─── Utilitaires ──────────────────────────────────────────────
@@ -154,17 +137,17 @@ function genererMd5Aleatoire() {
   return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }
 
-// ─── SECURE KEY ───────────────────────────────────────────────
+// ─── Secure key ───────────────────────────────────────────────
 
 async function getCustomerSecureKey(customerId) {
-  const data     = await prestaFetch(`/customers/${customerId}`);
-  const customer = data.customer?.[0] || data.customer;
-  const key      = extraireValeur(customer?.secure_key);
+  const data = await prestaFetch(`/customers/${customerId}`);
+  const cust = data.customer?.[0] || data.customer;
+  const key  = extraireValeur(cust?.secure_key);
   if (!key || key.length !== 32) throw new Error(`secure_key invalide pour customer ${customerId}`);
   return key;
 }
 
-// ─── GUEST CUSTOMER ───────────────────────────────────────────
+// ─── Guest customer ───────────────────────────────────────────
 
 async function createGuestCustomer(guestData) {
   const passwd  = genererMd5Aleatoire();
@@ -186,21 +169,18 @@ async function createGuestCustomer(guestData) {
   const guestId  = Number(extraireValeur(customer?.id));
   const key      = extraireValeur(customer?.secure_key);
 
-  if (!guestId) throw new Error('[createGuestCustomer] ID guest non récupéré');
+  if (!guestId) throw new Error('[createGuestCustomer] ID non récupéré');
   if (!key || key.length !== 32) throw new Error('[createGuestCustomer] secure_key invalide');
-
-  console.log('[orderService] Customer guest créé, ID:', guestId);
   return { guestId, secureKey: key };
 }
 
-// ─── ADRESSES ─────────────────────────────────────────────────
+// ─── Adresses ─────────────────────────────────────────────────
 
 export async function getCustomerAddresses(customerId) {
   try {
-    const data      = await prestaFetch(`/addresses?filter[id_customer]=${customerId}&display=full`);
-    const addresses = data.addresses?.address || [];
-    const liste     = Array.isArray(addresses) ? addresses : [addresses];
-
+    const data  = await prestaFetch(`/addresses?filter[id_customer]=${customerId}&display=full`);
+    const addrs = data.addresses?.address || [];
+    const liste = Array.isArray(addrs) ? addrs : [addrs];
     return liste
       .filter((a) => extraireValeur(a.deleted) !== '1')
       .map((a) => ({
@@ -245,14 +225,21 @@ export async function createAddress(customerId, addressData) {
   const result  = await prestaWrite('/addresses', xmlBody, 'POST');
   const address = result.address?.[0] || result.address;
   const newId   = Number(extraireValeur(address?.id));
-  if (!newId) throw new Error("[createAddress] ID adresse non récupéré");
-  console.log('[orderService] Adresse créée, ID:', newId);
+  if (!newId) throw new Error('[createAddress] ID non récupéré');
   return newId;
 }
 
-// ─── CART ─────────────────────────────────────────────────────
+// ─── Cart (pour guests uniquement) ───────────────────────────
 
-async function createPrestaCartWithProducts(customerId, addressId, secureKey, cartItems) {
+async function createGuestCart(customerId, addressId, secureKey, cartItems) {
+  const rowsXml = cartItems.map((item) => `
+      <cart_row>
+        <id_product>${item.productId}</id_product>
+        <id_product_attribute>${item.combinationId || 0}</id_product_attribute>
+        <id_address_delivery>${addressId}</id_address_delivery>
+        <quantity>${item.quantity}</quantity>
+      </cart_row>`).join('');
+
   const xmlCreate = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <cart>
@@ -277,17 +264,9 @@ async function createPrestaCartWithProducts(customerId, addressId, secureKey, ca
   const resultCreate = await prestaWrite('/carts', xmlCreate, 'POST');
   const cartCreated  = resultCreate.cart?.[0] || resultCreate.cart;
   const cartId       = Number(extraireValeur(cartCreated?.id));
-  if (!cartId) throw new Error('[createPrestaCartWithProducts] Cart ID non récupéré');
-  console.log('[orderService] Cart créé, ID:', cartId);
+  if (!cartId) throw new Error('[createGuestCart] Cart ID non récupéré');
 
-  const cartRowsXml = cartItems.map((item) => `
-      <cart_row>
-        <id_product>${item.productId}</id_product>
-        <id_product_attribute>${item.combinationId || 0}</id_product_attribute>
-        <id_address_delivery>${addressId}</id_address_delivery>
-        <quantity>${item.quantity}</quantity>
-      </cart_row>`).join('\n');
-
+  // Ajout des produits via PUT
   const xmlUpdate = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <cart>
@@ -308,100 +287,69 @@ async function createPrestaCartWithProducts(customerId, addressId, secureKey, ca
     <secure_key>${secureKey}</secure_key>
     <allow_seperated_package>0</allow_seperated_package>
     <associations>
-      <cart_rows>
-        ${cartRowsXml}
-      </cart_rows>
+      <cart_rows>${rowsXml}</cart_rows>
     </associations>
   </cart>
 </prestashop>`;
 
   await prestaWrite(`/carts/${cartId}`, xmlUpdate, 'PUT');
-  console.log('[orderService] Produits ajoutés au cart', cartId);
   return cartId;
 }
 
-// ─── STOCKS ───────────────────────────────────────────────────
+// ─── Mise à jour adresse de livraison sur le cart ─────────────
 
 /**
- * FIX STOCK : Récupère les infos de stock pour décrémentation.
- *
- * Règle importante :
- *   - Si combinationId > 0 → on cherche UNIQUEMENT le stock de la combinaison
- *     (id_product_attribute = combinationId)
- *   - Si combinationId = 0 → on cherche UNIQUEMENT le stock du produit de base
- *     (id_product_attribute = 0)
- *
- * AVANT (bug) : on cherchait filter[id_product]=X et on prenait le 1er résultat,
- * ce qui pouvait être le stock de la combinaison OU le stock du produit de base,
- * causant une double décrémentation quand les deux étaient mis à jour.
+ * Met à jour l'adresse de livraison d'un cart PS existant.
+ * Nécessaire quand le client connecté choisit/crée une adresse au checkout
+ * (le cart a été créé avant avec addressId=0 ou l'adresse par défaut).
  */
-// async function getStockInfo(productId, combinationId) {
-//   let filter;
+async function updateCartAddress(cartId, customerId, addressId, secureKey) {
+  // Lire le cart actuel pour avoir toutes les associations
+  const data = await prestaFetch(`/carts/${cartId}?display=full`);
+  const cart = data.cart?.[0] || data.cart;
+  if (!cart) return;
 
-//   if (combinationId > 0) {
-//     // Stock spécifique à la combinaison
-//     filter = `filter[id_product]=${productId}&filter[id_product_attribute]=${combinationId}`;
-//   } else {
-//     // Stock du produit sans combinaison (id_product_attribute = 0)
-//     filter = `filter[id_product]=${productId}&filter[id_product_attribute]=0`;
-//   }
+  const rawRows = cart.associations?.cart_rows?.cart_row || [];
+  const rows    = Array.isArray(rawRows) ? rawRows : [rawRows];
 
-//   const data   = await prestaFetch(`/stock_availables?${filter}&display=full`);
-//   const stocks = data.stock_availables?.stock_available || [];
-//   const liste  = Array.isArray(stocks) ? stocks : [stocks];
+  const rowsXml = rows.map((r) => `
+      <cart_row>
+        <id_product>${extraireValeur(r.id_product)}</id_product>
+        <id_product_attribute>${extraireValeur(r.id_product_attribute)}</id_product_attribute>
+        <id_address_delivery>${addressId}</id_address_delivery>
+        <quantity>${extraireValeur(r.quantity)}</quantity>
+      </cart_row>`).join('');
 
-//   if (!liste.length) {
-//     console.warn(`[getStockInfo] Pas de stock pour produit ${productId} combi ${combinationId}`);
-//     return { stockId: null, currentQty: 0 };
-//   }
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
+  <cart>
+    <id>${cartId}</id>
+    <id_shop_group>${ORDER_CONFIG.ID_SHOP_GROUP}</id_shop_group>
+    <id_shop>${ORDER_CONFIG.ID_SHOP}</id_shop>
+    <id_address_delivery>${addressId}</id_address_delivery>
+    <id_address_invoice>${addressId}</id_address_invoice>
+    <id_currency>${ORDER_CONFIG.ID_CURRENCY}</id_currency>
+    <id_lang>${ORDER_CONFIG.ID_LANG}</id_lang>
+    <id_customer>${customerId}</id_customer>
+    <id_carrier>${ORDER_CONFIG.ID_CARRIER}</id_carrier>
+    <recyclable>0</recyclable>
+    <gift>0</gift>
+    <gift_message></gift_message>
+    <mobile_theme>0</mobile_theme>
+    <delivery_option></delivery_option>
+    <secure_key>${secureKey}</secure_key>
+    <allow_seperated_package>0</allow_seperated_package>
+    <associations>
+      <cart_rows>${rowsXml}</cart_rows>
+    </associations>
+  </cart>
+</prestashop>`;
 
-//   const stock = liste[0];
-//   return {
-//     stockId:    Number(extraireValeur(stock.id)),
-//     currentQty: Number(extraireValeur(stock.quantity)),
-//     productId:  Number(extraireValeur(stock.id_product)),
-//     combiId:    Number(extraireValeur(stock.id_product_attribute)),
-//   };
-// }
+  await prestaWrite(`/carts/${cartId}`, xml, 'PUT');
+  console.log(`[orderService] Adresse du cart ${cartId} mise à jour → ${addressId}`);
+}
 
-/**
- * Décrémente le stock d'UN seul enregistrement stock_available.
- *
- * FIX : On ne décrémente QUE le stock ciblé (combinaison OU produit de base),
- * jamais les deux pour le même article commandé.
- */
-// async function decrementStock(productId, combinationId, quantiteCommandee) {
-//   try {
-//     const { stockId, currentQty, combiId } = await getStockInfo(productId, combinationId);
-
-//     if (!stockId) {
-//       console.warn(`[decrementStock] Pas de stockId pour produit ${productId} combi ${combinationId}`);
-//       return;
-//     }
-
-//     const newQty  = Math.max(0, currentQty - quantiteCommandee);
-//     const xmlBody = `<?xml version="1.0" encoding="UTF-8"?>
-// <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-//   <stock_available>
-//     <id>${stockId}</id>
-//     <id_product>${productId}</id_product>
-//     <id_product_attribute>${combiId}</id_product_attribute>
-//     <quantity>${newQty}</quantity>
-//     <depends_on_stock>0</depends_on_stock>
-//     <out_of_stock>2</out_of_stock>
-//   </stock_available>
-// </prestashop>`;
-
-//     await prestaWrite(`/stock_availables/${stockId}`, xmlBody, 'PUT');
-//     console.log(
-//       `[orderService] Stock produit ${productId} combi ${combiId}: ${currentQty} → ${newQty} (-${quantiteCommandee})`
-//     );
-//   } catch (err) {
-//     console.error(`[decrementStock] Erreur produit ${productId} combi ${combinationId}:`, err.message);
-//   }
-// }
-
-// ─── ORDER_HISTORIES ──────────────────────────────────────────
+// ─── Statut commande ──────────────────────────────────────────
 
 async function forcerStatutViaHistorique(orderId, newState) {
   const xmlHistory = `<?xml version="1.0" encoding="UTF-8"?>
@@ -411,80 +359,40 @@ async function forcerStatutViaHistorique(orderId, newState) {
     <id_order_state>${newState}</id_order_state>
   </order_history>
 </prestashop>`;
-
   try {
     await prestaWrite('/order_histories', xmlHistory, 'POST');
-    console.log(`[orderService] Statut forcé à ${newState} pour commande ${orderId}`);
+    console.log(`[orderService] Statut forcé à ${newState} pour order ${orderId}`);
   } catch (err) {
-    console.warn(`[orderService] forcerStatutViaHistorique (non-bloquant):`, err.message);
-  }
-}
-
-// ─── ORDER_PAYMENTS ───────────────────────────────────────────
-
-async function enregistrerPaiement(orderReference, montant) {
-  const xmlPayment = `<?xml version="1.0" encoding="UTF-8"?>
-<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-  <order_payment>
-    <order_reference><![CDATA[${orderReference}]]></order_reference>
-    <id_currency>${ORDER_CONFIG.ID_CURRENCY}</id_currency>
-    <amount>${montant.toFixed(6)}</amount>
-    <payment_method><![CDATA[${ORDER_CONFIG.PAYMENT_LABEL}]]></payment_method>
-    <conversion_rate>1.000000</conversion_rate>
-    <transaction_id></transaction_id>
-    <card_number></card_number>
-    <card_brand></card_brand>
-    <card_expiration></card_expiration>
-    <card_holder></card_holder>
-  </order_payment>
-</prestashop>`;
-
-  try {
-    await prestaWrite('/order_payments', xmlPayment, 'POST');
-    console.log(`[orderService] Paiement enregistré pour ref ${orderReference}, montant=${montant}`);
-  } catch (err) {
-    console.warn(`[orderService] enregistrerPaiement (non-bloquant):`, err.message);
+    console.warn('[orderService] forcerStatutViaHistorique (non-bloquant):', err.message);
   }
 }
 
 // ─── CRÉER COMMANDE COMPLÈTE ──────────────────────────────────
-// ─── PATCH orderService.js ────────────────────────────────────
-//
-// Remplace UNIQUEMENT la fonction createFullOrder.
-//
-// PROBLÈMES IDENTIFIÉS via MySQL :
-//
-//   1. Triple ligne dans ps_order_payment (total affiché = 160.61 au lieu de 45.89) :
-//      - PrestaShop insère automatiquement une ligne order_payment lors du POST /orders
-//      - Le module ps_cashondelivery en insère une deuxième lors du changement de statut
-//      - Notre enregistrerPaiement() en ajoutait une troisième
-//      FIX : supprimer l'appel à enregistrerPaiement()
-//
-//   2. Montant incohérent (57.36 au lieu de 45.89) :
-//      - On envoyait cartItems.price qui est en TTC (×1.2 appliqué dans productsService)
-//      - PrestaShop stocke ses prix en HT et recalcule lui-même la TVA
-//      - Le montant TTC du frontoffice ne correspond pas au montant HT PrestaShop
-//      FIX : envoyer les montants tels que PrestaShop les retourne (depuis ses propres
-//            prix, pas nos prix TTC recalculés)
-//
-//   3. Stock décrémenté 2× (corrigé dans le patch précédent) :
-//      FIX : supprimer l'appel à decrementStock()
-//
-// RÉSULTAT : createFullOrder ne fait que créer le cart + l'order + forcer le statut.
-// PrestaShop gère lui-même les payments et les stocks.
-// ─────────────────────────────────────────────────────────────
 
+/**
+ * @param {Object} params
+ * @param {number}      params.customerId          - 0 si guest
+ * @param {Object|null} params.guestData           - { email, firstname, lastname } si guest
+ * @param {Array}       params.cartItems           - articles du panier
+ * @param {Object}      params.addressData         - données adresse saisies
+ * @param {number|null} params.existingAddressId   - ID adresse PS si déjà existante
+ * @param {number|null} params.existingCartId      - ID cart PS si déjà créé (client connecté)
+ *
+ * @returns {Promise<{ orderId: number, orderReference: string }>}
+ */
 export async function createFullOrder({
   customerId,
   guestData,
   cartItems,
   addressData,
   existingAddressId = null,
+  existingCartId    = null,   // ← NOUVEAU : cartId déjà persisté par CartContext
 }) {
   console.log('[orderService] Début création commande', {
     customerId,
-    isGuest: !!guestData,
-    nbArticles: cartItems.length,
+    isGuest:        !!guestData,
+    nbArticles:     cartItems.length,
+    existingCartId,
   });
 
   // ── Étape 1 : Customer & secure_key ──────────────────────
@@ -495,7 +403,7 @@ export async function createFullOrder({
     effectiveCustomerId = Number(customerId);
     secureKey           = await getCustomerSecureKey(effectiveCustomerId);
   } else {
-    if (!guestData?.email) throw new Error('guestData.email requis pour commande invité');
+    if (!guestData?.email) throw new Error('guestData.email requis');
     const { guestId, secureKey: guestKey } = await createGuestCustomer(guestData);
     effectiveCustomerId = guestId;
     secureKey           = guestKey;
@@ -510,24 +418,26 @@ export async function createFullOrder({
     addressId = await createAddress(effectiveCustomerId, addrData);
   }
 
-  // ── Étape 3 : Totaux ──────────────────────────────────────
-  //
-  // On envoie les totaux calculés depuis les prix du panier (TTC côté frontoffice).
-  // PrestaShop les écrasera de toute façon avec ses propres calculs depuis le cart.
-  // L'important est que les champs required soient présents et non nuls.
-  //
+  // ── Étape 3 : Cart ────────────────────────────────────────
+  let cartId;
+
+  if (existingCartId) {
+    // Client connecté : cart déjà créé et synchronisé par CartContext
+    // Il suffit de mettre à jour l'adresse (qui n'était pas connue avant)
+    cartId = existingCartId;
+    await updateCartAddress(cartId, effectiveCustomerId, addressId, secureKey);
+    console.log('[orderService] Cart PS existant réutilisé :', cartId);
+  } else {
+    // Guest/anonyme : créer le cart maintenant
+    cartId = await createGuestCart(effectiveCustomerId, addressId, secureKey, cartItems);
+    console.log('[orderService] Cart PS guest créé :', cartId);
+  }
+
+  // ── Étape 4 : Totaux ──────────────────────────────────────
   const totalProduits = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const totalTTC      = totalProduits; // SHIPPING_COST = 0
+  const totalTTC      = totalProduits;
 
-  // ── Étape 4 : Cart + produits ─────────────────────────────
-  const cartId = await createPrestaCartWithProducts(
-    effectiveCustomerId,
-    addressId,
-    secureKey,
-    cartItems,
-  );
-
-  // ── Étape 5 : Order ───────────────────────────────────────
+  // ── Étape 5 : POST /orders ────────────────────────────────
   const xmlOrder = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <order>
@@ -578,29 +488,13 @@ export async function createFullOrder({
   if (!orderId) throw new Error('[createFullOrder] ID commande non récupéré');
   console.log('[orderService] ✓ Commande créée, ID:', orderId, '| Ref:', orderRef);
 
-  // ── Étape 6 : Forcer statut via order_histories ───────────
-  //
-  // On force le statut UNIQUEMENT via order_histories.
-  // C'est le seul appel supplémentaire nécessaire.
-  // Le module ps_cashondelivery va insérer sa propre ligne order_payment
-  // lors de ce changement de statut — c'est son comportement normal.
-  //
+  // ── Étape 6 : Forcer statut ───────────────────────────────
   await forcerStatutViaHistorique(orderId, ORDER_CONFIG.DEFAULT_ORDER_STATE);
-
-  // ⚠️ PAS d'enregistrerPaiement() :
-  //    PrestaShop insère déjà une ligne order_payment lors du POST /orders.
-  //    Le module ps_cashondelivery en insère une deuxième lors du changement de statut.
-  //    Un 3ème appel manuel crée le warning "€X paid instead of €Y" dans le backoffice.
-
-  // ⚠️ PAS de decrementStock() :
-  //    PrestaShop décrémente le stock automatiquement lors de la création de la commande
-  //    (il lit les cart_rows). Un appel manuel ferait une double décrémentation.
 
   return { orderId, orderReference: orderRef };
 }
 
-
-// ─── RÉCUPÉRATION COMMANDES ───────────────────────────────────
+// ─── Récupération commandes ───────────────────────────────────
 
 export async function getCustomerOrders(customerId) {
   try {
@@ -626,12 +520,6 @@ export async function getCustomerOrders(customerId) {
   }
 }
 
-/**
- * FIX SOUS-TOTAUX :
- * PrestaShop ne retourne PAS total_price_tax_incl dans les order_rows de l'API.
- * Seuls product_quantity et unit_price_tax_incl sont fiables.
- * → On calcule totalPrice = unit_price_tax_incl × product_quantity côté JS.
- */
 function normaliserLignesCommande(rows) {
   if (!rows) return [];
   const liste = Array.isArray(rows) ? rows : [rows];
@@ -643,7 +531,7 @@ function normaliserLignesCommande(rows) {
       productName: extraireValeur(r.product_name),
       quantity:    qty,
       unitPrice,
-      totalPrice:  Math.round(unitPrice * qty * 100) / 100, // calculé côté JS
+      totalPrice:  Math.round(unitPrice * qty * 100) / 100,
     };
   });
 }
@@ -653,21 +541,18 @@ export async function getOrderStates() {
     const data   = await prestaFetch('/order_states?display=full');
     const states = data.order_states?.order_state || [];
     const liste  = Array.isArray(states) ? states : [states];
-
     return liste.map((s) => ({
       id:    Number(extraireValeur(s.id)),
       name:  extraireValeur(s.name, 2) || extraireValeur(s.name, 1),
       color: extraireValeur(s.color) || '#666',
     }));
-  } catch (err) {
-    console.warn('[getOrderStates] Fallback:', err.message);
+  } catch {
     return [
-      { id: 2,  name: 'Paiement accepté',                      color: '#3498D8' },
-      { id: 3,  name: 'En cours de préparation',               color: '#3498D8' },
-      { id: 4,  name: 'Expédié',                               color: '#01B887' },
-      { id: 5,  name: 'Livré',                                 color: '#01B887' },
-      { id: 6,  name: 'Annulé',                                color: '#2C3E50' },
-      { id: 13, name: 'En attente de paiement à la livraison', color: '#34209E' },
+      { id: 2, name: 'Paiement accepté',        color: '#3498D8' },
+      { id: 3, name: 'En cours de préparation',  color: '#3498D8' },
+      { id: 4, name: 'Expédié',                  color: '#01B887' },
+      { id: 5, name: 'Livré',                    color: '#01B887' },
+      { id: 6, name: 'Annulé',                   color: '#2C3E50' },
     ];
   }
 }

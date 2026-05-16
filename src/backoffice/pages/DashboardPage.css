@@ -435,3 +435,165 @@
   color: var(--c-doux);
   margin-left: 6px;
 }
+
+/**
+ * DashboardPage.css — ADDITIONS v3
+ * À ajouter à la fin de votre DashboardPage.css existant.
+ * ─────────────────────────────────────────────────────────────
+ * Nouveaux styles pour :
+ *   - Tableau paniers (.tableau-jour--panier)
+ *   - Section totaux récapitulatifs (.section-totaux)
+ *   - Grilles à 3 colonnes (.cartes-grille--3)
+ *   - Badges et cellules spécifiques paniers
+ * ─────────────────────────────────────────────────────────────
+ */
+
+/* ─── badge-total panier (dans CommandesPage) ────────────────── */
+.badge-total--panier {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+/* ─── Ligne panier dans la liste des commandes ───────────────── */
+.ligne-panier {
+  background: #fafafa;
+}
+
+.ligne-panier:hover {
+  background: #f5f4f2 !important;
+}
+
+.ref--panier {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.panier-articles {
+  font-size: 12px;
+  color: #6b6860;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.panier-action-info {
+  color: #d1d5db;
+  font-size: 13px;
+}
+
+/* ─── Tableau paniers (dashboard) ────────────────────────────── */
+.tableau-jour--panier {
+  border-color: #e5e7eb;
+}
+
+.tableau-jour--panier .tableau-jour__titre {
+  color: #4b5563;
+}
+
+.tableau-jour__badge--panier {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.panier-id {
+  color: #9ca3af;
+}
+
+.client-nom-cell {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.email-cell {
+  font-size: 12px;
+}
+
+.texte-doux {
+  color: #9ca3af;
+}
+
+.badge-articles {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  border-radius: 3px;
+  color: #4b5563;
+}
+
+.tfoot-total--panier {
+  background: #f9fafb;
+}
+
+.tfoot-total--panier td {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+/* ─── Wrapper tableaux côte-à-côte ──────────────────────────── */
+.tableaux-jour-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ─── Grille 3 colonnes ──────────────────────────────────────── */
+.cartes-grille--3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.cartes-grille--2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+@media (max-width: 900px) {
+  .cartes-grille--3,
+  .cartes-grille--2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Carte stats accent (CA réel) ──────────────────────────── */
+.carte-stats--accent {
+  border: 2px solid #d97706;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.12);
+}
+
+/* ─── Section totaux ─────────────────────────────────────────── */
+.section-totaux {
+  margin-top: 8px;
+}
+
+.totaux-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 16px;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.totaux-divider::before,
+.totaux-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
+}
+
+.totaux-note {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #f9fafb;
+  border-radius: 4px;
+  border-left: 3px solid #e5e7eb;
+  font-style: italic;
+}
+
+/* ─── Icône dans le titre du tableau ─────────────────────────── */
+.tableau-jour__icone {
+  margin-right: 6px;
+}

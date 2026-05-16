@@ -1,19 +1,12 @@
 /**
  * CheckoutPage.jsx
  * ─────────────────────────────────────────────────────────────
- * Tunnel de commande — saisie adresse + confirmation.
+ * v2 : Passe `existingCartId` à createFullOrder pour les clients connectés.
  *
- * MODES :
- *   - Client connecté  : pré-remplit l'adresse si existante
- *   - Guest (anonyme)  : saisie complète email + infos perso + adresse
+ * Le cart PS est déjà créé et synchronisé par CartContext.
+ * CheckoutPage n'a plus qu'à créer l'ORDER à partir de ce cart.
  *
- * FLUX :
- *   Étape 1 : Infos personnelles (guest uniquement)
- *   Étape 2 : Adresse de livraison
- *   Étape 3 : Récapitulatif + paiement → Confirmer
- *
- * ROUTE : /checkout
- *   State attendu : { guest: true } si mode invité
+ * Pour les guests, le flux est inchangé (cart créé pendant createFullOrder).
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -59,9 +52,7 @@ function StepIndicator({ currentStep }) {
 // ─── Sous-composant : formulaire adresse ──────────────────────
 
 function AdresseForm({ adresse, onChange, errors }) {
-  const handleChange = (e) => {
-    onChange({ ...adresse, [e.target.name]: e.target.value });
-  };
+  const handleChange = (e) => onChange({ ...adresse, [e.target.name]: e.target.value });
 
   const champ = (name, label, required = true, type = 'text', placeholder = '') => (
     <div className="form-group">
@@ -87,22 +78,17 @@ function AdresseForm({ adresse, onChange, errors }) {
         {champ('firstname', 'Prénom')}
         {champ('lastname', 'Nom')}
       </div>
-
       {champ('alias', 'Alias adresse', true, 'text', 'Ex : Domicile, Bureau…')}
       {champ('address1', 'Adresse (ligne 1)')}
       {champ('address2', 'Adresse (ligne 2)', false, 'text', 'Complément (optionnel)')}
-
       <div className="form-row">
         {champ('postcode', 'Code postal')}
         {champ('city', 'Ville')}
       </div>
-
-      {/* Pays : toujours France, lecture seule */}
       <div className="form-group">
         <label>Pays <span className="required">*</span></label>
         <input type="text" value="France" readOnly className="input--readonly" />
       </div>
-
       {champ('phone', 'Téléphone', true, 'tel', '06 00 00 00 00')}
     </div>
   );
@@ -116,7 +102,6 @@ function RecapPanier({ cartItems }) {
   return (
     <div className="recap-panier">
       <h3>Récapitulatif de votre commande</h3>
-
       <table className="recap-table">
         <thead>
           <tr>
@@ -131,9 +116,7 @@ function RecapPanier({ cartItems }) {
             <tr key={`${item.productId}-${item.combinationId}`}>
               <td>
                 <div className="recap-produit">
-                  {item.image && (
-                    <img src={item.image} alt={item.name} className="recap-img" />
-                  )}
+                  {item.image && <img src={item.image} alt={item.name} className="recap-img" />}
                   <span>{item.name}</span>
                 </div>
               </td>
@@ -160,7 +143,6 @@ function RecapPanier({ cartItems }) {
         </div>
       </div>
 
-      {/* Paiement — toujours "Paiement à la livraison" */}
       <div className="paiement-section">
         <h4>Mode de paiement</h4>
         <div className="paiement-option paiement-option--selected">
@@ -178,89 +160,62 @@ function RecapPanier({ cartItems }) {
 // ─── Composant principal ──────────────────────────────────────
 
 const CheckoutPage = () => {
-  const navigate  = useNavigate();
-  const location  = useLocation();
-  const { cart, clearCart } = useCart();
+  const navigate   = useNavigate();
+  const location   = useLocation();
+  const { cart, clearCart, getPsCartId, isSyncing } = useCart();
   const { client } = useFrontofficeClient();
 
-  // Mode guest si navigué avec state.guest = true
   const isGuest = location.state?.guest === true || client?.anonymous === true;
 
-  // Étape courante : 0 = adresse, 1 = récap, 2 = terminé
-  const [step,             setStep]             = useState(0);
-  const [adresse,          setAdresse]          = useState({
-    alias:    'Mon adresse',
+  const [step,               setStep]               = useState(0);
+  const [adresse,            setAdresse]            = useState({
+    alias:     'Mon adresse',
     firstname: client?.firstName || '',
     lastname:  client?.lastName  || '',
   });
-  const [guestData,        setGuestData]        = useState({
-    email:     '',
-    firstname: '',
-    lastname:  '',
-  });
+  const [guestData,          setGuestData]          = useState({ email: '', firstname: '', lastname: '' });
   const [adressesExistantes, setAdressesExistantes] = useState([]);
-  const [adresseSelecteeId,  setAdresseSelecteeId]  = useState(null); // null = nouvelle
-  const [erreurs,          setErreurs]          = useState({});
-  const [loading,          setLoading]          = useState(false);
-  const [orderResult,      setOrderResult]      = useState(null); // { orderId, orderReference }
-  const [erreurGlobale,    setErreurGlobale]    = useState(null);
+  const [adresseSelecteeId,  setAdresseSelecteeId]  = useState(null);
+  const [erreurs,            setErreurs]            = useState({});
+  const [loading,            setLoading]            = useState(false);
+  const [orderResult,        setOrderResult]        = useState(null);
+  const [erreurGlobale,      setErreurGlobale]      = useState(null);
 
-  // ── Garde : panier vide → retour ──────────────────────────
+  // Garde : panier vide
   useEffect(() => {
-    if (cart.length === 0 && !orderResult) {
-      navigate('/cart');
-    }
+    if (cart.length === 0 && !orderResult) navigate('/cart');
   }, [cart, navigate, orderResult]);
 
-  // ── Garde : client non connecté en mode non-guest → login ─
-  useEffect(() => {
-    if (!isGuest && client && client.anonymous) {
-      navigate('/clients', { state: { from: '/checkout' } });
-    }
-  }, [client, isGuest, navigate]);
-
-  // ── Chargement des adresses existantes (client connecté) ──
+  // Chargement adresses existantes (client connecté)
   useEffect(() => {
     if (!isGuest && client && !client.anonymous && client.id) {
-      getCustomerAddresses(client.id)
-        .then((addrs) => {
-          setAdressesExistantes(addrs);
-          if (addrs.length > 0) {
-            // Pré-sélectionner la première adresse
-            setAdresseSelecteeId(addrs[0].id);
-            setAdresse({
-              alias:    addrs[0].alias,
-              firstname: addrs[0].firstname,
-              lastname:  addrs[0].lastname,
-              address1:  addrs[0].address1,
-              address2:  addrs[0].address2 || '',
-              postcode:  addrs[0].postcode,
-              city:      addrs[0].city,
-              phone:     addrs[0].phone,
-            });
-          } else {
-            // Pas d'adresse → pré-remplir avec les infos du client
-            setAdresse((prev) => ({
-              ...prev,
-              firstname: client.firstName || '',
-              lastname:  client.lastName  || '',
-            }));
-          }
-        });
+      getCustomerAddresses(client.id).then((addrs) => {
+        setAdressesExistantes(addrs);
+        if (addrs.length > 0) {
+          setAdresseSelecteeId(addrs[0].id);
+          const a = addrs[0];
+          setAdresse({ alias: a.alias, firstname: a.firstname, lastname: a.lastname,
+            address1: a.address1, address2: a.address2 || '', postcode: a.postcode,
+            city: a.city, phone: a.phone });
+        } else {
+          setAdresse((prev) => ({
+            ...prev,
+            firstname: client.firstName || '',
+            lastname:  client.lastName  || '',
+          }));
+        }
+      });
     }
   }, [client, isGuest]);
 
-  // ── Validation formulaire adresse ─────────────────────────
+  // Validation
   const validerAdresse = () => {
     const e = {};
-
     if (isGuest) {
-      if (!guestData.email.trim())     e.email     = 'Email requis';
+      if (!guestData.email.trim())     e.email      = 'Email requis';
       if (!guestData.firstname.trim()) e.gfirstname = 'Prénom requis';
       if (!guestData.lastname.trim())  e.glastname  = 'Nom requis';
     }
-
-    // Si adresse existante sélectionnée → pas de validation du formulaire
     if (!adresseSelecteeId) {
       if (!adresse.firstname?.trim()) e.firstname = 'Prénom requis';
       if (!adresse.lastname?.trim())  e.lastname  = 'Nom requis';
@@ -269,36 +224,19 @@ const CheckoutPage = () => {
       if (!adresse.city?.trim())      e.city      = 'Ville requise';
       if (!adresse.phone?.trim())     e.phone     = 'Téléphone requis';
     }
-
     setErreurs(e);
     return Object.keys(e).length === 0;
   };
 
-  // ── Navigation étapes ─────────────────────────────────────
   const handleNextStep = () => {
-    if (step === 0) {
-      if (!validerAdresse()) return;
-      setStep(1);
-    }
+    if (step === 0 && validerAdresse()) setStep(1);
   };
 
-  const handlePrevStep = () => {
-    if (step > 0) setStep((s) => s - 1);
-  };
-
-  // ── Sélection adresse existante ───────────────────────────
   const handleSelectAdresse = (addr) => {
     setAdresseSelecteeId(addr.id);
-    setAdresse({
-      alias:    addr.alias,
-      firstname: addr.firstname,
-      lastname:  addr.lastname,
-      address1:  addr.address1,
-      address2:  addr.address2 || '',
-      postcode:  addr.postcode,
-      city:      addr.city,
-      phone:     addr.phone,
-    });
+    setAdresse({ alias: addr.alias, firstname: addr.firstname, lastname: addr.lastname,
+      address1: addr.address1, address2: addr.address2 || '', postcode: addr.postcode,
+      city: addr.city, phone: addr.phone });
   };
 
   const handleNouvelleAdresse = () => {
@@ -321,16 +259,32 @@ const CheckoutPage = () => {
         ? { email: guestData.email, firstname: guestData.firstname, lastname: guestData.lastname }
         : null;
 
+      // Récupère le cartId PS déjà créé par CartContext (null si guest)
+      const existingCartId = isGuest ? null : getPsCartId();
+
+      if (!isGuest && !existingCartId) {
+        // Cas rare : client connecté mais cart PS pas encore créé (réseau lent)
+        // On attend un peu et on réessaie
+        await new Promise((r) => setTimeout(r, 1000));
+        const retryId = getPsCartId();
+        if (!retryId && isSyncing) {
+          setErreurGlobale('Le panier est en cours de synchronisation. Veuillez réessayer dans quelques secondes.');
+          setLoading(false);
+          return;
+        }
+      }
+
       const result = await createFullOrder({
         customerId,
-        guestData: guestInfo,
-        cartItems: cart,
-        addressData: adresse,
-        existingAddressId: adresseSelecteeId, // null = créer nouvelle
+        guestData:         guestInfo,
+        cartItems:         cart,
+        addressData:       adresse,
+        existingAddressId: adresseSelecteeId,
+        existingCartId:    isGuest ? null : getPsCartId(),
       });
 
       setOrderResult(result);
-      clearCart(); // Vide le panier localStorage
+      clearCart();
       setStep(2);
 
     } catch (err) {
@@ -348,7 +302,6 @@ const CheckoutPage = () => {
       <TopBar />
       <div className="checkout-page">
 
-        {/* Fil d'Ariane */}
         <nav className="checkout-breadcrumb">
           <Link to="/products">Produits</Link>
           <span>›</span>
@@ -359,7 +312,13 @@ const CheckoutPage = () => {
 
         <h1 className="checkout-title">Finaliser ma commande</h1>
 
-        {/* Indicateur d'étapes */}
+        {/* Badge synchro panier (clients connectés) */}
+        {isSyncing && !isGuest && (
+          <div className="sync-badge">
+            ⏳ Synchronisation du panier en cours…
+          </div>
+        )}
+
         <StepIndicator currentStep={step} />
 
         {/* ── ÉTAPE 0 : ADRESSE ─────────────────────────── */}
@@ -367,7 +326,6 @@ const CheckoutPage = () => {
           <div className="checkout-step">
             <h2>Adresse de livraison et facturation</h2>
 
-            {/* Infos guest */}
             {isGuest && (
               <div className="guest-infos-section">
                 <h3>Vos informations</h3>
@@ -386,32 +344,23 @@ const CheckoutPage = () => {
                 </div>
                 <div className="form-row">
                   <div className="form-group">
-                    <label htmlFor="guest-firstname">Prénom <span className="required">*</span></label>
-                    <input
-                      id="guest-firstname"
-                      type="text"
-                      value={guestData.firstname}
+                    <label>Prénom <span className="required">*</span></label>
+                    <input type="text" value={guestData.firstname}
                       onChange={(e) => setGuestData({ ...guestData, firstname: e.target.value })}
-                      className={erreurs.gfirstname ? 'input--error' : ''}
-                    />
+                      className={erreurs.gfirstname ? 'input--error' : ''} />
                     {erreurs.gfirstname && <span className="error-msg">{erreurs.gfirstname}</span>}
                   </div>
                   <div className="form-group">
-                    <label htmlFor="guest-lastname">Nom <span className="required">*</span></label>
-                    <input
-                      id="guest-lastname"
-                      type="text"
-                      value={guestData.lastname}
+                    <label>Nom <span className="required">*</span></label>
+                    <input type="text" value={guestData.lastname}
                       onChange={(e) => setGuestData({ ...guestData, lastname: e.target.value })}
-                      className={erreurs.glastname ? 'input--error' : ''}
-                    />
+                      className={erreurs.glastname ? 'input--error' : ''} />
                     {erreurs.glastname && <span className="error-msg">{erreurs.glastname}</span>}
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Adresses existantes (client connecté) */}
             {!isGuest && adressesExistantes.length > 0 && (
               <div className="adresses-existantes">
                 <h3>Vos adresses enregistrées</h3>
@@ -430,8 +379,6 @@ const CheckoutPage = () => {
                       <p>{addr.phone}</p>
                     </div>
                   ))}
-
-                  {/* Carte "Nouvelle adresse" */}
                   <div
                     className={`adresse-card adresse-card--new ${adresseSelecteeId === null ? 'adresse-card--selected' : ''}`}
                     onClick={handleNouvelleAdresse}
@@ -443,23 +390,16 @@ const CheckoutPage = () => {
               </div>
             )}
 
-            {/* Formulaire adresse (nouvelle ou pas d'adresse existante) */}
             {(!adresseSelecteeId || adressesExistantes.length === 0) && (
               <div className="adresse-form-section">
                 {adressesExistantes.length > 0 && <h3>Saisir une nouvelle adresse</h3>}
-                <AdresseForm
-                  adresse={adresse}
-                  onChange={setAdresse}
-                  errors={erreurs}
-                />
+                <AdresseForm adresse={adresse} onChange={setAdresse} errors={erreurs} />
               </div>
             )}
 
             <div className="checkout-actions">
               <Link to="/cart" className="btn-secondary">← Retour au panier</Link>
-              <button className="btn-primary" onClick={handleNextStep}>
-                Continuer →
-              </button>
+              <button className="btn-primary" onClick={handleNextStep}>Continuer →</button>
             </div>
           </div>
         )}
@@ -467,7 +407,6 @@ const CheckoutPage = () => {
         {/* ── ÉTAPE 1 : RÉCAPITULATIF ───────────────────── */}
         {step === 1 && (
           <div className="checkout-step">
-            {/* Adresse choisie */}
             <div className="adresse-choisie">
               <h3>Adresse de livraison</h3>
               <p>
@@ -477,27 +416,24 @@ const CheckoutPage = () => {
                 {adresse.postcode} {adresse.city} — France<br />
                 {adresse.phone}
               </p>
-              <button className="btn-link" onClick={handlePrevStep}>Modifier</button>
+              <button className="btn-link" onClick={() => setStep(0)}>Modifier</button>
             </div>
 
-            {/* Récap panier + paiement */}
             <RecapPanier cartItems={cart} />
 
-            {/* Erreur globale */}
             {erreurGlobale && (
-              <div className="erreur-globale">
-                ⚠ {erreurGlobale}
-              </div>
+              <div className="erreur-globale">⚠ {erreurGlobale}</div>
             )}
 
             <div className="checkout-actions">
-              <button className="btn-secondary" onClick={handlePrevStep}>← Retour</button>
+              <button className="btn-secondary" onClick={() => setStep(0)}>← Retour</button>
               <button
                 className="btn-confirm"
                 onClick={handleConfirmerCommande}
-                disabled={loading}
+                disabled={loading || isSyncing}
+                title={isSyncing ? 'Synchronisation en cours…' : ''}
               >
-                {loading ? 'Création en cours…' : 'Confirmer la commande'}
+                {loading ? 'Création en cours…' : isSyncing ? 'Patientez…' : 'Confirmer la commande'}
               </button>
             </div>
           </div>
@@ -509,7 +445,6 @@ const CheckoutPage = () => {
             <div className="success-icon">✓</div>
             <h2>Commande confirmée !</h2>
             <p>Merci pour votre commande.</p>
-
             <div className="order-info-box">
               <div>
                 <span>Numéro de commande</span>
@@ -526,7 +461,6 @@ const CheckoutPage = () => {
                 <strong>{ORDER_CONFIG.PAYMENT_LABEL}</strong>
               </div>
             </div>
-
             <div className="checkout-actions checkout-actions--center">
               {!isGuest && (
                 <button className="btn-primary" onClick={() => navigate('/orders')}>

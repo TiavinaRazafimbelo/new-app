@@ -1,141 +1,297 @@
 /**
- * CartContext.jsx
- * 
- * Contexte global pour gérer le panier
- * Permet à toute l'app d'accéder au panier et d'être notifiée des changements
+ * CartContext.jsx — v3
+ * ─────────────────────────────────────────────────────────────
+ * FIX : plus de doublons de cart à la reconnexion.
+ *
+ * PROBLÈME v2 :
+ *   - Au login, useEffect lançait getActivePsCartId() en arrière-plan (async)
+ *   - Si l'user modifiait son panier avant que la réponse arrive,
+ *     syncToPrestashop voyait psCartRef=null et créait un nouveau cart
+ *   - Race condition → 2 carts créés pour le même client
+ *
+ * SOLUTION v3 : cartResolutionRef
+ *   - Au changement de client, on stocke la promesse de résolution dans cartResolutionRef
+ *   - syncToPrestashop ATTEND cette promesse avant d'agir
+ *   - resolveActiveCart interroge TOUJOURS PS en base en priorité
+ *     (source de vérité) avant de créer quoi que ce soit
+ *   - Un cart n'est créé QUE si aucun cart actif n'existe en base
+ *
+ * RÈGLE MÉTIER :
+ *   - 1 seul cart actif par client à la fois
+ *   - Un cart devient inactif quand il est converti en order
+ *   - clearCart() tente DELETE (PS refusera si lié à une order → ignoré)
+ * ─────────────────────────────────────────────────────────────
  */
 
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import {
   getCart,
-  addToCart as addToCartService,
-  removeFromCart as removeFromCartService,
-  updateQuantity as updateQuantityService,
-  clearCart as clearCartService,
+  addToCart         as addToCartLocal,
+  removeFromCart    as removeFromCartLocal,
+  updateQuantity    as updateQuantityLocal,
+  clearCart         as clearCartLocal,
   getCartTotal,
   getCartCount,
   mergeAnonymousCartToAuthenticatedCart,
 } from '../services/cartService';
+import {
+  createPsCart,
+  updatePsCartRows,
+  deletePsCart,
+  getActivePsCartId,
+} from '../services/cartApiService';
 import { useFrontofficeClient } from './FrontofficeClientContext';
 
-// Crée le contexte
 const CartContext = createContext();
 
-/**
- * Provider du panier
- * À envelopper autour de l'app dans App.jsx
- * 
- * ⚠️ IMPORTANT : Chaque client a son propre panier !
- * Quand le client change (login/logout), le panier se met à jour automatiquement
- */
+const psCartKey = (clientId) => `ps_cart_id_${clientId}`;
+
 export const CartProvider = ({ children }) => {
-  const { client } = useFrontofficeClient(); // Récupère le client actuel
-  const [cart, setCart] = useState([]);
+  const { client } = useFrontofficeClient();
+
+  const [cart,      setCart]      = useState([]);
   const [cartCount, setCartCount] = useState(0);
-  const [currentClientId, setCurrentClientId] = useState(() => {
-    // Initialiser avec le clientId du client actuel
-    if (!client) return 'anonymous';
-    if (client.anonymous) return `anon_${client.anonSessionId}` || 'anonymous';
-    return client.id || 'anonymous';
-  });
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(null);
 
-  // Génère l'ID du client (utilise l'UUID pour les anonymes)
-  const getClientId = () => {
-    if (!client) return 'anonymous';
-    if (client.anonymous) return `anon_${client.anonSessionId}` || 'anonymous';
-    return client.id || 'anonymous';
-  };
+  const psCartRef         = useRef(null);   // { cartId, secureKey, addressId }
+  const syncQueueRef      = useRef(null);   // timeout debounce
+  const cartResolutionRef = useRef(null);   // Promise<cartId|null> en cours
 
-  // ⚠️ SYNCHRONISATION IMPORTANTE : Écoute les changements du client
-  useEffect(() => {
-    const newClientId = getClientId();
-    // console.log('[CartContext] Client changé :', { ancien: currentClientId, nouveau: newClientId, client });
-    
-    // Si le client a réellement changé, met à jour le panier
-    if (newClientId !== currentClientId) {
-      setCurrentClientId(newClientId);
-      const newCart = getCart(newClientId);
-      setCart(newCart);
-      // console.log('[CartContext] Panier chargé pour client', newClientId, ':', newCart.length, 'articles');
+  // ── Helpers ────────────────────────────────────────────────
+
+  const getClientId = useCallback(() => {
+    if (!client) return 'anonymous';
+    if (client.anonymous) return `anon_${client.anonSessionId || 'guest'}`;
+    return client.id || 'anonymous';
+  }, [client]);
+
+  const isConnected = useCallback(() => {
+    return !!(client && !client.anonymous && client.id);
+  }, [client]);
+
+  /**
+   * Récupère la secure_key via regex sur le XML brut (pas de dépendance à XMLParser).
+   * Mise en cache dans psCartRef.secureKey.
+   */
+  const fetchSecureKey = useCallback(async (customerId) => {
+    if (psCartRef.current?.secureKey) return psCartRef.current.secureKey;
+    try {
+      const res   = await fetch(`/api/customers/${customerId}`, {
+        headers: {
+          Authorization: 'Basic ' + btoa(`${import.meta.env.VITE_PRESTA_API_KEY}:`),
+          Accept:        'application/xml',
+        },
+      });
+      const xml   = await res.text();
+      const match = xml.match(/<secure_key[^>]*>(?:<!\[CDATA\[)?([a-f0-9]{32})(?:\]\]>)?<\/secure_key>/);
+      const sk    = match?.[1] || '';
+      if (sk && psCartRef.current) psCartRef.current.secureKey = sk;
+      return sk;
+    } catch {
+      return '';
     }
-  }, [client]); // Écoute le client directement
+  }, []);
 
-  // Met à jour le badge de quantité
+  /**
+   * SOURCE DE VÉRITÉ : résout le cartId actif pour un client connecté.
+   *
+   * Priorité :
+   *   1. Cart actif en base PS non lié à une order   → réutiliser
+   *   2. Aucun cart actif + panier vide              → rien à faire
+   *   3. Aucun cart actif + panier non vide          → créer un nouveau cart
+   *
+   * Appelé UNE SEULE FOIS par changement de client (useEffect).
+   * syncToPrestashop attend cette promesse via cartResolutionRef.
+   *
+   * @returns {Promise<number|null>}
+   */
+  const resolveActiveCart = useCallback(async (clientId, customerId, items) => {
+    setIsSyncing(true);
+    try {
+      const activeId = await getActivePsCartId(customerId);
+
+      if (activeId) {
+        // Cart actif trouvé en base → réutiliser, jamais recréer
+        psCartRef.current = { cartId: activeId, secureKey: null, addressId: null };
+        localStorage.setItem(psCartKey(clientId), String(activeId));
+        console.log('[CartContext] Cart PS actif retrouvé :', activeId);
+
+        // Synchroniser les articles locaux sur ce cart si nécessaire
+        if (items.length > 0) {
+          const sk = await fetchSecureKey(customerId);
+          if (sk) {
+            await updatePsCartRows(activeId, customerId, items, sk, 0);
+          }
+        }
+        return activeId;
+      }
+
+      // Aucun cart actif en base
+      if (items.length === 0) {
+        // Panier vide → pas de cart à créer
+        localStorage.removeItem(psCartKey(clientId));
+        psCartRef.current = null;
+        return null;
+      }
+
+      // Panier non vide → créer un cart
+      console.log('[CartContext] Création nouveau cart PS…');
+      const meta = await createPsCart(customerId);
+      psCartRef.current = meta;
+      localStorage.setItem(psCartKey(clientId), String(meta.cartId));
+      await updatePsCartRows(meta.cartId, customerId, items, meta.secureKey, meta.addressId || 0);
+      console.log('[CartContext] Cart PS créé :', meta.cartId);
+      return meta.cartId;
+
+    } catch (err) {
+      console.error('[CartContext] resolveActiveCart échec :', err.message);
+      setSyncError(err.message);
+      return null;
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [fetchSecureKey]);
+
+  // ── Chargement au changement de client ─────────────────────
   useEffect(() => {
-    setCartCount(getCartCount(currentClientId));
-  }, [cart, currentClientId]);
+    const clientId = getClientId();
+    const stored   = getCart(clientId);
 
-  /**
-   * Charge le panier depuis localStorage
-   */
-  const loadCart = () => {
-    const cartItems = getCart(currentClientId);
-    setCart(cartItems);
-  };
+    setCart(stored);
+    setCartCount(getCartCount(clientId));
+    setSyncError(null);
+    psCartRef.current = null;       // reset mémoire
+    cartResolutionRef.current = null;
 
-  /**
-   * Ajoute un article au panier
-   */
-  const addToCart = (item) => {
-    // console.log('[CartContext] Ajout article au panier du client', currentClientId);
-    const updatedCart = addToCartService(currentClientId, item);
+    if (!isConnected()) return;     // anonyme → rien à faire côté PS
+
+    // Lance la résolution et stocke la promesse pour que syncToPrestashop puisse l'attendre
+    cartResolutionRef.current = resolveActiveCart(clientId, client.id, stored);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
+
+  // ── Badge count ────────────────────────────────────────────
+  useEffect(() => {
+    setCartCount(getCartCount(getClientId()));
+  }, [cart, getClientId]);
+
+  // ── Synchro PS (debounce 300ms) ────────────────────────────
+  const syncToPrestashop = useCallback((clientId, updatedCart) => {
+    if (!isConnected()) return;
+
+    clearTimeout(syncQueueRef.current);
+    syncQueueRef.current = setTimeout(async () => {
+      setIsSyncing(true);
+      setSyncError(null);
+      try {
+        // ATTENDRE la résolution initiale du cart avant d'agir
+        // Élimine la race condition login → modification rapide
+        if (cartResolutionRef.current) {
+          await cartResolutionRef.current;
+          cartResolutionRef.current = null;
+        }
+
+        // Après résolution, psCartRef est fiable
+        if (!psCartRef.current?.cartId) {
+          if (updatedCart.length === 0) {
+            // Panier vidé sans cart existant → rien à faire
+            return;
+          }
+          // Double vérification en base (sécurité contre les appels concurrents)
+          const activeId = await getActivePsCartId(client.id);
+          if (activeId) {
+            psCartRef.current = { cartId: activeId, secureKey: null, addressId: null };
+            localStorage.setItem(psCartKey(clientId), String(activeId));
+            console.log('[CartContext] Cart PS retrouvé (double vérif) :', activeId);
+          } else {
+            const meta = await createPsCart(client.id);
+            psCartRef.current = meta;
+            localStorage.setItem(psCartKey(clientId), String(meta.cartId));
+            console.log('[CartContext] Cart PS créé (sync) :', meta.cartId);
+          }
+        }
+
+        const { cartId, addressId } = psCartRef.current;
+        const sk = await fetchSecureKey(client.id);
+        if (!sk) {
+          console.warn('[CartContext] secure_key introuvable, synchro abandonnée');
+          return;
+        }
+
+        await updatePsCartRows(cartId, client.id, updatedCart, sk, addressId || 0);
+        setSyncError(null);
+
+      } catch (err) {
+        console.error('[CartContext] syncToPrestashop échec :', err.message);
+        setSyncError(err.message);
+      } finally {
+        setIsSyncing(false);
+      }
+    }, 300);
+  }, [client, isConnected, fetchSecureKey]);
+
+  // ── Actions panier ─────────────────────────────────────────
+
+  const addToCart = useCallback((item) => {
+    const clientId    = getClientId();
+    const updatedCart = addToCartLocal(clientId, item);
     setCart(updatedCart);
-  };
+    syncToPrestashop(clientId, updatedCart);
+  }, [getClientId, syncToPrestashop]);
 
-  /**
-   * Supprime une ligne du panier
-   */
-  const removeFromCart = (productId, combinationId) => {
-    const updatedCart = removeFromCartService(currentClientId, productId, combinationId);
+  const removeFromCart = useCallback((productId, combinationId) => {
+    const clientId    = getClientId();
+    const updatedCart = removeFromCartLocal(clientId, productId, combinationId);
     setCart(updatedCart);
-  };
+    syncToPrestashop(clientId, updatedCart);
+  }, [getClientId, syncToPrestashop]);
 
-  /**
-   * Modifie la quantité
-   */
-  const updateQuantity = (productId, combinationId, newQuantity) => {
-    const updatedCart = updateQuantityService(currentClientId, productId, combinationId, newQuantity);
+  const updateQuantity = useCallback((productId, combinationId, newQty) => {
+    const clientId    = getClientId();
+    const updatedCart = updateQuantityLocal(clientId, productId, combinationId, newQty);
     setCart(updatedCart);
-  };
+    syncToPrestashop(clientId, updatedCart);
+  }, [getClientId, syncToPrestashop]);
 
-  /**
-   * Vide le panier
-   */
-  const clearCart = () => {
-    const updatedCart = clearCartService(currentClientId);
-    setCart(updatedCart);
-  };
+  const clearCart = useCallback(() => {
+    const clientId = getClientId();
+    clearCartLocal(clientId);
+    setCart([]);
 
-  /**
-   * Récupère le total
-   */
-  const getTotal = () => {
-    return getCartTotal(currentClientId);
-  };
+    if (isConnected() && psCartRef.current?.cartId) {
+      // PS refusera si le cart est lié à une order → ignoré silencieusement
+      deletePsCart(psCartRef.current.cartId).catch(() => {});
+      localStorage.removeItem(psCartKey(clientId));
+      psCartRef.current = null;
+    }
+  }, [getClientId, isConnected]);
 
-  /**
-   * Fusionne le panier anonyme avec le panier du client authentifié
-   * À appeler quand un anonyme se connecte
-   * 
-   * @param {string|number} anonClientId - ID du client anonyme (ex: "anon_uuid")
-   * @param {string|number} authenticatedClientId - ID du client authentifié (ex: 9)
-   */
-  const mergeAnonToAuthCart = (anonClientId, authenticatedClientId) => {
-    console.log(
-      `[CartContext] Fusion panier anonyme (${anonClientId}) → authentifié (${authenticatedClientId})`
-    );
+  const loadCart = useCallback(() => {
+    setCart(getCart(getClientId()));
+  }, [getClientId]);
+
+  const getTotal = useCallback(() => {
+    return getCartTotal(getClientId());
+  }, [getClientId]);
+
+  const mergeAnonToAuthCart = useCallback(async (anonClientId, authenticatedClientId) => {
     const mergedCart = mergeAnonymousCartToAuthenticatedCart(anonClientId, authenticatedClientId);
-    
-    // Mettre à jour le panier local et le currentClientId
-    setCurrentClientId(authenticatedClientId);
     setCart(mergedCart);
-    
-    // console.log('[CartContext] Fusion terminée, panier mis à jour');
-  };
+    if (isConnected()) {
+      syncToPrestashop(String(authenticatedClientId), mergedCart);
+    }
+  }, [isConnected, syncToPrestashop]);
+
+  // ── Valeur exposée ─────────────────────────────────────────
 
   const value = {
     cart,
     cartCount,
+    isSyncing,
+    syncError,
+    psCartId: psCartRef.current?.cartId ?? null,
+    getPsCartId: () => psCartRef.current?.cartId ?? null,
     addToCart,
     removeFromCart,
     updateQuantity,
@@ -152,18 +308,9 @@ export const CartProvider = ({ children }) => {
   );
 };
 
-/**
- * Hook pour accéder au contexte du panier
- * @returns {Object} Le contexte du panier
- * 
- * Utilisation dans un composant :
- * const { cart, cartCount, addToCart } = useCart();
- */
 export const useCart = () => {
   const context = useContext(CartContext);
-  if (!context) {
-    throw new Error('useCart doit être utilisé avec CartProvider');
-  }
+  if (!context) throw new Error('useCart doit être utilisé avec CartProvider');
   return context;
 };
 
