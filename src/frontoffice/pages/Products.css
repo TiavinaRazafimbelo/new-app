@@ -260,3 +260,62 @@
     box-shadow: 0 2px 12px rgba(231, 76, 60, 0.6);
   }
 }
+
+/* ─── Ajout CSS pour les prix en promo ───────────────────────
+   Coller dans Products.css (pour ProductCard)
+   ET dans ProductDetailPage.css (pour la fiche détail)
+   ─────────────────────────────────────────────────────────── */
+
+/* ── ProductCard : prix barré + prix réduit ─────────────────── */
+
+.price-original {
+  text-decoration: line-through;
+  text-decoration-color: #e53e3e;
+  color: #9ca3af;
+  font-size: 0.9em;
+  margin-right: 4px;
+}
+
+.price-promo {
+  color: #e53e3e;
+  font-weight: 700;
+}
+
+/* Badge PROMO sur les cartes */
+.product-badge--promo {
+  background: #e53e3e;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── ProductDetailPage : prix barré + badge promo ────────────── */
+
+.prix-original-detail {
+  text-decoration: line-through;
+  text-decoration-color: #e53e3e;
+  color: #9ca3af;
+  font-size: 18px;
+  margin-right: 8px;
+}
+
+.prix-principal--promo {
+  color: #e53e3e;
+}
+
+.badge-promo {
+  display: inline-block;
+  background: #e53e3e;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: 4px;
+}

@@ -1,10 +1,13 @@
 /**
  * ProductDetailPage.jsx
  * ─────────────────────────────────────────────────────────────
- * CORRECTION :
- *   - Prix affiché en TTC (productsService retourne déjà le TTC)
- *   - Mention "TTC" à la place de "HT — TVA non incluse"
- *   - Le prix additionnel des combinaisons est aussi en TTC
+ * CORRECTIONS v2 :
+ *   - Utilise product.priceTTC (prix total TTC de la combinaison)
+ *     au lieu de product.price + combi.price (qui était un supplément)
+ *   - Affiche le prix original barré si promo (product.prixOriginalTTC)
+ *   - Sélecteur de combinaison affiche "X,XX € TTC"
+ *     au lieu d'un supplément "+X,XX €"
+ *   - Badge "PROMO" si réduction active
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -12,7 +15,6 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { getProductById } from '../services/productsService';
 import { useCart } from '../contexts/CartContext';
-import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
 import TopBar from '../components/TopBar';
 import './ProductDetailPage.css';
 
@@ -20,8 +22,7 @@ import './ProductDetailPage.css';
 
 function GalerieImages({ images, nomProduit }) {
   const [indexActif, setIndexActif] = useState(0);
-
-  if (!images || images.length === 0) {
+  if (!images?.length) {
     return (
       <div className="galerie">
         <div className="galerie__principale galerie__principale--vide">
@@ -30,9 +31,7 @@ function GalerieImages({ images, nomProduit }) {
       </div>
     );
   }
-
   const imageActive = images[indexActif];
-
   return (
     <div className="galerie">
       <div className="galerie__principale">
@@ -46,7 +45,6 @@ function GalerieImages({ images, nomProduit }) {
           <span className="galerie__compteur">{indexActif + 1} / {images.length}</span>
         )}
       </div>
-
       {images.length > 1 && (
         <div className="galerie__miniatures">
           {images.map((img, i) => (
@@ -54,7 +52,6 @@ function GalerieImages({ images, nomProduit }) {
               key={img.id}
               className={`galerie__miniature ${i === indexActif ? 'galerie__miniature--active' : ''}`}
               onClick={() => setIndexActif(i)}
-              aria-label={`Vue ${i + 1}`}
             >
               <img src={img.url} alt={`Miniature ${i + 1}`} />
             </button>
@@ -66,10 +63,9 @@ function GalerieImages({ images, nomProduit }) {
 }
 
 function BadgeStock({ quantity }) {
-  const enStock = quantity > 0;
   return (
-    <span className={`badge-stock ${enStock ? 'badge-stock--dispo' : 'badge-stock--rupture'}`}>
-      {enStock ? `En stock (${quantity})` : 'Rupture de stock'}
+    <span className={`badge-stock ${quantity > 0 ? 'badge-stock--dispo' : 'badge-stock--rupture'}`}>
+      {quantity > 0 ? `En stock (${quantity})` : 'Rupture de stock'}
     </span>
   );
 }
@@ -99,10 +95,15 @@ function Accordeon({ titre, children }) {
   );
 }
 
-function SelecteurCombinaison({ combinations, prixBaseTTC, onSelect }) {
+/**
+ * SelecteurCombinaison
+ *
+ * Affiche chaque option avec son prix TTC total (pas un supplément).
+ * Si la combinaison est en promo, affiche le prix original barré.
+ */
+function SelecteurCombinaison({ combinations, onSelect }) {
   const [selectionne, setSelectionne] = useState(null);
-
-  if (!combinations || combinations.length === 0) return null;
+  if (!combinations?.length) return null;
 
   const handleChange = (e) => {
     const id    = Number(e.target.value);
@@ -113,26 +114,17 @@ function SelecteurCombinaison({ combinations, prixBaseTTC, onSelect }) {
 
   return (
     <div className="selecteur-combi">
-      <label className="selecteur-combi__label" htmlFor="combi-select">
-        Déclinaison
-      </label>
+      <label className="selecteur-combi__label" htmlFor="combi-select">Déclinaison</label>
       <select id="combi-select" className="selecteur-combi__select" onChange={handleChange} defaultValue="">
         <option value="">— Produit de base —</option>
         {combinations.map((c) => {
-          // c.price = impact TTC de la combinaison
-          const prixAddiTTC  = c.price || 0;
-          const suffixPrix   = prixAddiTTC !== 0
-            ? ` (${prixAddiTTC > 0 ? '+' : ''}${prixAddiTTC.toFixed(2)} €)`
-            : '';
-
-          const labelFromAttributes = c.attributes
-            ? Object.values(c.attributes).join(' / ')
-            : null;
-          const displayLabel = labelFromAttributes || c.label || `Déclinaison #${c.id}`;
-
+          const labelAttrs  = c.attributes ? Object.values(c.attributes).join(' / ') : null;
+          const displayLabel = labelAttrs || c.reference || `Déclinaison #${c.id}`;
+          // On affiche le prix TTC total de la combinaison
+          const prixAffiche  = (c.priceTTC || 0).toFixed(2);
           return (
             <option key={c.id} value={c.id} disabled={c.quantity === 0}>
-              {displayLabel}{suffixPrix}{c.quantity === 0 ? ' — Rupture' : ''}
+              {displayLabel} — {prixAffiche} € TTC{c.quantity === 0 ? ' (Rupture)' : ''}
             </option>
           );
         })}
@@ -159,8 +151,8 @@ function SelecteurCombinaison({ combinations, prixBaseTTC, onSelect }) {
 // ─── Composant principal ──────────────────────────────────────
 
 const ProductDetailPage = () => {
-  const { id }      = useParams();
-  const navigate    = useNavigate();
+  const { id }       = useParams();
+  const navigate     = useNavigate();
   const { addToCart } = useCart();
 
   const [produit,       setProduit]       = useState(null);
@@ -174,72 +166,75 @@ const ProductDetailPage = () => {
     let annule = false;
     setChargement(true);
     setErreur(null);
-
     getProductById(id)
-      .then((data) => { if (!annule) setProduit(data); })
-      .catch((err) => { if (!annule) setErreur(err.message); })
-      .finally(() => { if (!annule) setChargement(false); });
-
+      .then((data) => { if (!annule) { setProduit(data); setCombiSelectee(null); } })
+      .catch((err)  => { if (!annule) setErreur(err.message); })
+      .finally(()   => { if (!annule) setChargement(false); });
     return () => { annule = true; };
   }, [id]);
 
-  // Prix TTC affiché = prix TTC produit + impact TTC de la combinaison
-  // produit.price et combiSelectee.price sont DÉJÀ en TTC grâce au service corrigé
-  const prixTTC = produit
-    ? (produit.price + (combiSelectee?.price || 0))
-    : 0;
+  // ── Calcul du prix affiché ─────────────────────────────────
+  // Si combinaison sélectionnée → son prix TTC total
+  // Sinon → prix TTC du produit de base (après promo éventuelle)
+  const prixTTC = combiSelectee
+    ? (combiSelectee.priceTTC || 0)
+    : (produit?.price || 0);
 
+  // Prix original (avant promo) pour afficher le barré
+  const prixOriginalTTC = combiSelectee
+    ? combiSelectee.prixOriginalTTC
+    : produit?.prixOriginalTTC;
+
+  const aPromo = combiSelectee ? combiSelectee.aPromo : produit?.aPromo;
+
+  const stockAffiche = combiSelectee ? combiSelectee.quantity : (produit?.quantity ?? 0);
+
+  // ── Ajout au panier ────────────────────────────────────────
   const handleAddToCart = () => {
-    const stockDispo = combiSelectee ? combiSelectee.quantity : produit.quantity;
-
-    if (quantite <= 0 || quantite > stockDispo) {
-      setMessageAjout({ type: 'error', text: `Quantité invalide. Stock disponible : ${stockDispo}` });
+    if (quantite <= 0 || quantite > stockAffiche) {
+      setMessageAjout({ type: 'error', text: `Stock disponible : ${stockAffiche}` });
       setTimeout(() => setMessageAjout(null), 3000);
       return;
     }
-
     addToCart({
       productId:     produit.id,
       combinationId: combiSelectee?.id || 0,
       quantity:      quantite,
       name:          produit.name,
       image:         produit.images?.[0]?.url || null,
-      price:         parseFloat(prixTTC.toFixed(2)),   // ← TTC stocké dans le panier
-      stock:         stockDispo,
+      price:         parseFloat(prixTTC.toFixed(2)),
+      stock:         stockAffiche,
     });
-
-    setMessageAjout({ type: 'success', text: `✓ ${produit.name} ajouté au panier (qty: ${quantite})` });
+    setMessageAjout({ type: 'success', text: `✓ ${produit.name} ajouté au panier` });
     setQuantite(1);
     setTimeout(() => setMessageAjout(null), 3000);
   };
 
-  // ── États ──────────────────────────────────────────────────
-  if (chargement) {
-    return (
+  // ── Rendu ──────────────────────────────────────────────────
+  if (chargement) return (
+    <>
+      <TopBar />
       <div className="detail-page detail-page--chargement">
-        <div className="spinner" />
-        <p>Chargement du produit…</p>
+        <div className="spinner" /><p>Chargement du produit…</p>
       </div>
-    );
-  }
+    </>
+  );
 
-  if (erreur) {
-    return (
+  if (erreur) return (
+    <>
+      <TopBar />
       <div className="detail-page detail-page--erreur">
         <span className="erreur-icone">⚠</span>
-        <h2>Produit introuvable</h2>
-        <p>{erreur}</p>
+        <h2>Produit introuvable</h2><p>{erreur}</p>
         <Link to="/products" className="btn-retour">← Retour aux produits</Link>
       </div>
-    );
-  }
+    </>
+  );
 
   if (!produit) return null;
 
   const aDesDimensions =
     produit.weight > 0 || produit.width > 0 || produit.height > 0 || produit.depth > 0;
-
-  const stockAffiche = combiSelectee ? combiSelectee.quantity : produit.quantity;
 
   return (
     <>
@@ -260,18 +255,26 @@ const ProductDetailPage = () => {
           <div className="detail-droite">
             <div className="detail-badges">
               <BadgeCondition condition={produit.condition} />
+              {aPromo && <span className="badge-promo">PROMO</span>}
             </div>
 
             <h1 className="detail-nom">{produit.name}</h1>
             <p className="detail-ref">Réf. <span>{produit.reference || '—'}</span></p>
 
-            {/* Prix TTC */}
+            {/* ── Prix avec promo éventuelle ───────────────── */}
             <div className="detail-prix">
-              <span className="prix-principal">{prixTTC.toFixed(2)} €</span>
-              {/* ← CORRECTION : TTC affiché */}
+              {aPromo && prixOriginalTTC ? (
+                <>
+                  <span className="prix-original-detail">{prixOriginalTTC.toFixed(2)} €</span>
+                  <span className="prix-principal prix-principal--promo">
+                    {prixTTC.toFixed(2)} €
+                  </span>
+                </>
+              ) : (
+                <span className="prix-principal">{prixTTC.toFixed(2)} €</span>
+              )}
               <span className="prix-mention">
-                TTC
-                {produit.taxRate > 0 && ` (TVA ${produit.taxRate}%)`}
+                TTC{produit.taxRate > 0 && ` (TVA ${produit.taxRate}%)`}
               </span>
             </div>
 
@@ -286,12 +289,13 @@ const ProductDetailPage = () => {
 
             <hr className="detail-separateur" />
 
+            {/* Sélecteur combinaison */}
             <SelecteurCombinaison
               combinations={produit.combinations}
-              prixBaseTTC={produit.price}
               onSelect={setCombiSelectee}
             />
 
+            {/* Quantité + bouton panier */}
             <div className="detail-ajouter-panier">
               <div className="quantite-group">
                 <label htmlFor="quantite-input">Quantité :</label>
@@ -327,6 +331,7 @@ const ProductDetailPage = () => {
               )}
             </div>
 
+            {/* Méta-informations */}
             <div className="detail-meta">
               {produit.ean13 && produit.ean13 !== '0' && (
                 <div className="meta-ligne">
@@ -368,10 +373,8 @@ const ProductDetailPage = () => {
         {produit.description && (
           <div className="detail-section">
             <Accordeon titre="Description complète">
-              <div
-                className="description-longue"
-                dangerouslySetInnerHTML={{ __html: produit.description }}
-              />
+              <div className="description-longue"
+                dangerouslySetInnerHTML={{ __html: produit.description }} />
             </Accordeon>
           </div>
         )}
