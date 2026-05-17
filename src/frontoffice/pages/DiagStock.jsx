@@ -1,70 +1,51 @@
 /**
- * DiagProduitXML.jsx
- * Affiche le XML brut du produit pour voir la structure exacte des associations.
- * Naviguer vers /diag-produit-xml/5
+ * DiagSchemas.jsx
+ * Diagnostic temporaire — affiche les synopsis de taxes et categories
+ * pour voir le format exact attendu par PrestaShop 8.
+ * Route : /diag-schemas
  */
 
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
 
 const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;
 const BASE_URL = '/api';
-
 function auth() { return 'Basic ' + btoa(`${API_KEY}:`); }
 
-export default function DiagProduitXML() {
-  const { id } = useParams();
-  const [xml, setXml] = useState('');
+async function fetchSynopsis(resource) {
+  const r = await fetch(`${BASE_URL}/${resource}?schema=synopsis`, {
+    headers: { Authorization: auth(), Accept: 'application/xml' },
+  });
+  return { status: r.status, text: await r.text() };
+}
+
+export default function DiagSchemas() {
+  const [results, setResults] = useState(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/products/${id}?display=full`, {
-      headers: { Authorization: auth(), Accept: 'application/xml' },
-    })
-      .then(r => r.text())
-      .then(text => {
-        // Extraire uniquement la section <associations> pour ne pas surcharger
-        const start = text.indexOf('<associations>');
-        const end   = text.indexOf('</associations>') + '</associations>'.length;
-        const assoc = start >= 0 ? text.slice(start, end) : '(section <associations> non trouvée dans le XML)';
+    Promise.all([
+      fetchSynopsis('taxes'),
+      fetchSynopsis('tax_rule_groups'),
+      fetchSynopsis('categories'),
+    ]).then(([taxes, groups, cats]) => {
+      setResults({ taxes, groups, cats });
+    });
+  }, []);
 
-        // Aussi extraire les 500 premiers caractères du produit pour contexte
-        const debut = text.slice(0, 300);
-
-        setXml({ assoc, debut, full: text });
-      });
-  }, [id]);
-
-  if (!xml) return <div style={{ padding: '2rem' }}>Chargement...</div>;
+  if (!results) return <div style={{ padding: '2rem' }}>Chargement...</div>;
 
   return (
-    <div style={{ padding: '1rem', fontFamily: 'monospace', fontSize: '12px', maxWidth: '900px' }}>
-      <h1 style={{ fontFamily: 'sans-serif', fontSize: '1.2rem' }}>
-        🔍 XML brut produit #{id} — section associations
-      </h1>
-
-      <h2 style={{ fontFamily: 'sans-serif', fontSize: '1rem', marginTop: '1rem' }}>
-        Début du XML (300 premiers caractères)
-      </h2>
-      <pre style={{ background: '#f8f9fa', padding: '1rem', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '11px', border: '1px solid #dee2e6', borderRadius: '6px' }}>
-        {xml.debut}
-      </pre>
-
-      <h2 style={{ fontFamily: 'sans-serif', fontSize: '1rem', marginTop: '1rem' }}>
-        Section &lt;associations&gt; complète
-      </h2>
-      <pre style={{ background: '#f8f9fa', padding: '1rem', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '11px', border: '1px solid #dee2e6', borderRadius: '6px', maxHeight: '600px' }}>
-        {xml.assoc}
-      </pre>
-
-      <h2 style={{ fontFamily: 'sans-serif', fontSize: '1rem', marginTop: '1rem' }}>
-        XML complet (pour copier-coller)
-      </h2>
-      <details>
-        <summary style={{ cursor: 'pointer', padding: '4px' }}>Afficher le XML complet</summary>
-        <pre style={{ background: '#f8f9fa', padding: '1rem', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '10px', border: '1px solid #dee2e6', borderRadius: '6px', maxHeight: '800px' }}>
-          {xml.full}
-        </pre>
-      </details>
+    <div style={{ padding: '1rem', fontFamily: 'monospace', fontSize: '12px' }}>
+      <h1 style={{ fontFamily: 'sans-serif' }}>Synopsis PrestaShop</h1>
+      {Object.entries(results).map(([key, val]) => (
+        <details key={key} open style={{ marginBottom: '1rem', border: '1px solid #ccc', borderRadius: '6px' }}>
+          <summary style={{ padding: '8px 12px', background: val.status === 200 ? '#d4edda' : '#f8d7da', fontWeight: 'bold', cursor: 'pointer' }}>
+            [{val.status}] {key}
+          </summary>
+          <pre style={{ padding: '1rem', overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '11px', background: '#f8f9fa' }}>
+            {val.text}
+          </pre>
+        </details>
+      ))}
     </div>
   );
 }

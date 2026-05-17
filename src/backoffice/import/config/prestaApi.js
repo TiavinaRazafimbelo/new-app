@@ -1,65 +1,111 @@
 /**
  * prestaApi.js
- * Client HTTP partagé pour tous les modules d'import.
- * Gère l'auth, le parsing XML et les erreurs PrestaShop.
+ * src/backoffice/import/config/prestaApi.js
+ * ─────────────────────────────────────────────────────────────
+ * Fonctions utilitaires pour communiquer avec l'API Web Services
+ * de PrestaShop 8.2.6.
+ *
+ * Toutes les requêtes passent par le proxy Vite (/api).
+ * Authentification : Basic Auth avec VITE_PRESTA_API_KEY.
+ * Format : XML (l'API PS ne supporte pas JSON nativement).
+ * ─────────────────────────────────────────────────────────────
  */
 
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 
 const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;
 const BASE_URL = '/api';
 
-const parser = new XMLParser({
+// ─── Auth ─────────────────────────────────────────────────────
+
+export function getAuthHeader() {
+  return 'Basic ' + btoa(`${API_KEY}:`);
+}
+
+// ─── Parser XML (lecture) ─────────────────────────────────────
+
+export const xmlParser = new XMLParser({
   ignoreAttributes:       false,
   attributeNamePrefix:    '@_',
   cdataPropName:          '__cdata',
   textNodeName:           '#text',
   parseAttributeValue:    true,
   allowBooleanAttributes: true,
-  isArray: (tag) => [
-    'order', 'order_row', 'order_state', 'address', 'cart', 'cart_row',
-    'product', 'stock_available', 'customer', 'category', 'combination',
-    'product_option', 'product_option_value', 'image', 'error',
-    'tax_rule_group', 'attribute', 'attribute_group',
-  ].includes(tag),
+  // Ces tags peuvent apparaître plusieurs fois → toujours en tableau
+  isArray: (tagName) => [
+    'product', 'category', 'tax_rule', 'tax_rule_group',
+    'language', 'image', 'combination', 'product_option',
+    'product_option_value', 'stock_available', 'specific_price',
+  ].includes(tagName),
 });
 
-function getAuthHeader() {
-  return 'Basic ' + btoa(`${API_KEY}:`);
-}
+// ─── Extraction de valeur depuis un champ parsé ───────────────
 
-export function extraireValeur(champ, langId = 1) {
+/**
+ * Extrait la valeur d'un champ PrestaShop, qu'il soit :
+ *   - une chaîne simple
+ *   - un objet CDATA { __cdata: "valeur" }
+ *   - un objet multilingue { language: [{ @_id: 1, __cdata: "valeur" }] }
+ *
+ * @param {*}      champ  - champ brut issu du parser XML
+ * @param {number} langId - ID de langue (1 = français/défaut)
+ * @returns {string}
+ */
+export function extraireVal(champ, langId = 1) {
   if (champ === undefined || champ === null) return '';
   if (typeof champ === 'string' || typeof champ === 'number') return String(champ);
   if (champ.__cdata !== undefined) return String(champ.__cdata);
+  if (champ['#text'] !== undefined) return String(champ['#text']);
   if (champ.language) {
     const langues = Array.isArray(champ.language) ? champ.language : [champ.language];
     const langue  = langues.find((l) => Number(l['@_id']) === langId) || langues[0];
     if (!langue) return '';
     if (langue.__cdata !== undefined) return String(langue.__cdata);
-    if (langue['#text'] !== undefined) return String(langue['#text']);
+    if (langue['#text']  !== undefined) return String(langue['#text']);
+    return String(langue);
   }
   return String(champ);
 }
 
+// ─── GET ──────────────────────────────────────────────────────
+
 /**
- * GET vers l'API PrestaShop
+ * Requête GET vers l'API PrestaShop.
+ * Retourne l'objet parsé depuis le XML de réponse.
+ *
+ * @param {string} endpoint - ex: '/products?display=full'
+ * @returns {Promise<Object>} - objet prestashop parsé
+ * @throws {Error} si la réponse HTTP n'est pas ok
  */
 export async function prestaGet(endpoint) {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
-    headers: { Authorization: getAuthHeader(), Accept: 'application/xml' },
+    headers: {
+      Authorization: getAuthHeader(),
+      Accept:        'application/xml',
+    },
   });
 
-  const xml = await res.text();
-  if (!res.ok) throw new Error(`GET ${endpoint} -> ${res.status}: ${xml.slice(0, 200)}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GET ${endpoint} → HTTP ${res.status}: ${text.slice(0, 300)}`);
+  }
 
-  const parsed = parser.parse(xml);
+  const xml    = await res.text();
+  const parsed = xmlParser.parse(xml);
   return parsed.prestashop || parsed;
 }
 
+// ─── POST / PUT ───────────────────────────────────────────────
+
 /**
- * POST ou PUT vers l'API PrestaShop
- * Retourne { hookError: true } si HTTP 500 causé uniquement par des hooks deprecated
+ * Requête POST ou PUT vers l'API PrestaShop avec un body XML.
+ * Retourne l'objet parsé depuis le XML de réponse.
+ *
+ * @param {string} endpoint    - ex: '/products'
+ * @param {string} xmlBody     - XML complet à envoyer
+ * @param {'POST'|'PUT'} method
+ * @returns {Promise<Object>}
+ * @throws {Error} si la réponse HTTP n'est pas ok
  */
 export async function prestaWrite(endpoint, xmlBody, method = 'POST') {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
@@ -72,47 +118,70 @@ export async function prestaWrite(endpoint, xmlBody, method = 'POST') {
     body: xmlBody,
   });
 
-  const xml = await res.text();
+  const text = await res.text();
 
   if (!res.ok) {
-    // Detecter erreur hook deprecated (gamification) = non bloquant
-    try {
-      const parsed = parser.parse(xml);
-      const errors = parsed?.prestashop?.errors?.error || [];
-      const liste  = Array.isArray(errors) ? errors : [errors];
-      const tousHooks = liste.length > 0 && liste.every(
-        (e) => String(extraireValeur(e?.code)) === '15'
-      );
-      if (tousHooks && method === 'POST') {
-        console.warn(`[prestaWrite] ${method} ${endpoint} -> Hook deprecated (non bloquant)`);
-        return { hookError: true };
-      }
-    } catch (_) {}
-
-    throw new Error(`${method} ${endpoint} -> ${res.status}: ${xml.slice(0, 300)}`);
+    // Extraire le message d'erreur PrestaShop s'il existe
+    const msgMatch = text.match(/<message><!\[CDATA\[(.*?)\]\]><\/message>/);
+    const msg = msgMatch ? msgMatch[1] : text.slice(0, 300);
+    throw new Error(`${method} ${endpoint} → HTTP ${res.status}: ${msg}`);
   }
 
-  const parsed = parser.parse(xml);
+  const parsed = xmlParser.parse(text);
   return parsed.prestashop || parsed;
 }
 
+// ─── Upload image ─────────────────────────────────────────────
+
 /**
- * Upload d'une image produit (multipart/form-data)
+ * Upload une image pour un produit via multipart/form-data.
+ * Endpoint : POST /api/images/products/:productId
+ *
+ * @param {number} productId
+ * @param {File|Blob} imageFile
+ * @returns {Promise<Object>} réponse parsée
+ * @throws {Error}
  */
-export async function prestaUploadImage(productId, file) {
+export async function prestaUploadImage(productId, imageFile) {
   const formData = new FormData();
-  formData.append('image', file, file.name);
+  formData.append('image', imageFile);
 
   const res = await fetch(`${BASE_URL}/images/products/${productId}`, {
     method: 'POST',
-    headers: { Authorization: getAuthHeader() },
+    headers: {
+      Authorization: getAuthHeader(),
+      // Ne pas définir Content-Type : le navigateur le fait avec le boundary
+    },
     body: formData,
   });
 
+  const text = await res.text();
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Image upload produit ${productId} -> ${res.status}: ${txt.slice(0, 200)}`);
+    throw new Error(`Upload image produit ${productId} → HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
 
-  return true;
+  const parsed = xmlParser.parse(text);
+  return parsed.prestashop || parsed;
+}
+
+// ─── Récupération du schéma vide (synopsis) ──────────────────
+
+/**
+ * Récupère le schéma XML vide d'une ressource PrestaShop.
+ * Utile pour connaître tous les champs disponibles.
+ * Exemple : prestaGetSchema('products') → XML du schéma produit vide
+ *
+ * @param {string} resource - ex: 'products', 'categories'
+ * @returns {Promise<string>} XML brut du schéma
+ */
+export async function prestaGetSchema(resource) {
+  const res = await fetch(`${BASE_URL}/${resource}?schema=synopsis`, {
+    headers: {
+      Authorization: getAuthHeader(),
+      Accept:        'application/xml',
+    },
+  });
+
+  if (!res.ok) throw new Error(`Schéma ${resource} → HTTP ${res.status}`);
+  return res.text();
 }

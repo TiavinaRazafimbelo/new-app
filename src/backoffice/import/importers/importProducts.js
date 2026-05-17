@@ -1,306 +1,305 @@
 /**
- * importProducts.js
- * Importe catégories, produits et images dans PrestaShop.
+ * importProducts.js — v4
+ * src/backoffice/import/importers/importProducts.js
  *
- * ORDRE :
- *   1. Récupérer/créer les catégories
- *   2. Créer chaque produit
- *   3. Upload de l'image si disponible
+ * FIX #1 — Catégorie rejetée "name est vide" :
+ *   PS8 avec 2 langues installées exige TOUTES les langues dans les champs
+ *   multilingues. On charge d'abord la liste des langues actives et on les
+ *   inclut toutes dans chaque champ multilingue.
  *
- * FIX : slugify robuste (gère accents, caractères malgaches, tirets, fallback)
- *       tax_rule_id défensif (log + fallback si taux inconnu)
- *       Validation catId/productId avant tout appel POST
+ * FIX #2 — Extraction ID depuis réponse tableau :
+ *   PS retourne parfois { category: [{id:...}] } (tableau via isArray)
+ *   au lieu de { category: {id:...} }. On normalise les deux cas.
  */
 
-import { prestaGet, prestaWrite, prestaUploadImage, extraireValeur } from '../config/prestaApi.js';
-import { PRESTA_CONFIG, TAX_RATE_TO_RULE_ID } from '../config/columnMapping.js';
+import { prestaGet, prestaWrite, extraireVal } from '../config/prestaApi.js';
+import { chargerTaxMapping, resoudreTaxGroup, ttcVersHT } from '../config/taxMapping.js';
 
-// ─── Utilitaire ───────────────────────────────────────────────
+const ID_CATEGORIE_PARENTE_DEFAUT = 2;
+const ID_SHOP                    = 1;
 
-/**
- * Convertit une chaîne quelconque en slug PrestaShop valide.
- * Gère les accents, caractères malgaches, espaces, tirets multiples.
- * Ne retourne jamais une chaîne vide (fallback sur 'item').
- *
- * @param {string} str
- * @returns {string}
- */
-function slugify(str) {
-  return (
-    String(str)
-      .toLowerCase()
-      .normalize('NFD')                 // décompose les caractères accentués
-      .replace(/[\u0300-\u036f]/g, '')  // supprime les diacritiques (é→e, à→a…)
-      .replace(/[^a-z0-9]+/g, '-')     // tout caractère non alphanum → tiret
-      .replace(/^-+|-+$/g, '')         // trim les tirets de début/fin
-    || 'item'                           // fallback si slug totalement vide
-  );
+// ─── Chargement des langues actives ──────────────────────────
+
+async function chargerLangues() {
+  try {
+    const data  = await prestaGet('/languages?display=full&filter[active]=1');
+    const bruts = data.languages?.language || [];
+    const liste = Array.isArray(bruts) ? bruts : [bruts];
+    const ids   = liste.map((l) => Number(extraireVal(l.id))).filter(Boolean);
+    return ids.length ? ids : [1];
+  } catch {
+    return [1];
+  }
 }
 
-// ─── Catégories ───────────────────────────────────────────────
+// ─── Bloc XML multilingue ─────────────────────────────────────
 
-/**
- * Récupère toutes les catégories existantes.
- * @returns {Promise<Map<string, number>>} Map nom_lowercase → id
- */
-async function getExistingCategories() {
-  const data = await prestaGet('/categories?display=full');
-  const cats = data.categories?.category || [];
-  const liste = Array.isArray(cats) ? cats : [cats];
-
-  const map = new Map();
-  for (const c of liste) {
-    const name = extraireValeur(c.name, PRESTA_CONFIG.ID_LANG).toLowerCase().trim();
-    const id   = Number(extraireValeur(c.id));
-    if (id && name) map.set(name, id);
-  }
-  return map;
+function blocMultilingue(tagName, valeur, langIds) {
+  const inner = langIds
+    .map((id) => `<language id="${id}"><![CDATA[${valeur}]]></language>`)
+    .join('');
+  return `<${tagName}>${inner}</${tagName}>`;
 }
 
-/**
- * Crée une catégorie si elle n'existe pas déjà.
- * @param {string} name        - nom brut issu du CSV
- * @param {Map}    existingMap - Map nom_lowercase → id (mis à jour en place)
- * @returns {Promise<number>} ID de la catégorie
- */
-async function getOrCreateCategory(name, existingMap) {
-  const key  = name.toLowerCase().trim();
-  const slug = slugify(name);
+// ─── XML catégorie ────────────────────────────────────────────
 
-  if (existingMap.has(key)) return existingMap.get(key);
+function buildCategorieXml(nomOriginal, langIds) {
+  const slug = nomOriginal
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 
-  // Sécurité : slug ne doit jamais être vide (PS rejette avec "name est vide" si le
-  // champ link_rewrite est absent ou vide, même quand name est correct)
-  if (!slug) {
-    throw new Error(`[importProducts] Slug vide pour la catégorie "${name}" — vérifiez le nom dans le CSV`);
-  }
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <category>
-    <id_parent><![CDATA[2]]></id_parent>
+    <id_parent><![CDATA[${ID_CATEGORIE_PARENTE_DEFAUT}]]></id_parent>
     <active><![CDATA[1]]></active>
-    <id_shop_default><![CDATA[${PRESTA_CONFIG.ID_SHOP}]]></id_shop_default>
+    <id_shop_default><![CDATA[${ID_SHOP}]]></id_shop_default>
     <is_root_category><![CDATA[0]]></is_root_category>
-    <name>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${name}]]></language>
-    </name>
-    <description>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </description>
-    <meta_title>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${name}]]></language>
-    </meta_title>
-    <meta_description>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </meta_description>
-    <meta_keywords>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </meta_keywords>
-    <link_rewrite>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${slug}]]></language>
-    </link_rewrite>
+    ${blocMultilingue('name',             nomOriginal, langIds)}
+    ${blocMultilingue('description',      '',          langIds)}
+    ${blocMultilingue('meta_title',       nomOriginal, langIds)}
+    ${blocMultilingue('meta_description', '',          langIds)}
+    ${blocMultilingue('meta_keywords',    '',          langIds)}
+    ${blocMultilingue('link_rewrite',     slug,        langIds)}
   </category>
 </prestashop>`;
-
-console.log('[DEBUG XML catégorie]', xml);
-
-  const result = await prestaWrite('/categories', xml, 'POST');
-  const cat    = result.category?.[0] || result.category;
-  const newId  = Number(extraireValeur(cat?.id));
-
-  if (!newId) {
-    throw new Error(`[importProducts] Catégorie "${name}" non créée — réponse PS inattendue : ${JSON.stringify(result)}`);
-  }
-
-  existingMap.set(key, newId);
-  console.log(`[importProducts] Catégorie créée : "${name}" (slug: ${slug}) → ID ${newId}`);
-  console.log('[DEBUG] name=', JSON.stringify(name), 'slug=', slugify(name));
-  return newId;
 }
 
-// ─── Produits ─────────────────────────────────────────────────
+// ─── XML produit ──────────────────────────────────────────────
 
-/**
- * Récupère les produits existants indexés par référence.
- * @returns {Promise<Map<string, number>>} Map référence → id
- */
-export async function getExistingProductsByRef() {
-  const data  = await prestaGet('/products?display=full');
-  const prods = data.products?.product || [];
-  const liste = Array.isArray(prods) ? prods : [prods];
+function buildProduitXml(produit, idCategorie, idTaxGroup, prixHT, langIds) {
+  const slug = produit.nom
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 
-  const map = new Map();
-  for (const p of liste) {
-    const ref = extraireValeur(p.reference).trim();
-    const id  = Number(extraireValeur(p.id));
-    if (ref && id) map.set(ref, id);
-  }
-  return map;
-}
-
-/**
- * Résout l'ID du groupe de taxe à partir du taux brut CSV.
- * Log un avertissement si le taux est inconnu et utilise le défaut (1).
- *
- * @param {string} rawTaxRate - ex: "11,65%" ou "5.60%"
- * @returns {number} ID tax_rule_group PrestaShop
- */
-function resolveTaxRuleId(rawTaxRate) {
-  const normalized = String(rawTaxRate || '').trim();
-  if (normalized in TAX_RATE_TO_RULE_ID) {
-    return TAX_RATE_TO_RULE_ID[normalized];
-  }
-  // Tentative de normalisation : virgule ↔ point
-  const alternate = normalized.includes(',')
-    ? normalized.replace(',', '.')
-    : normalized.replace('.', ',');
-  if (alternate in TAX_RATE_TO_RULE_ID) {
-    return TAX_RATE_TO_RULE_ID[alternate];
-  }
-  console.warn(
-    `[importProducts] Taux TVA inconnu : "${normalized}" — fallback sur tax_rule_group 1. ` +
-    `Ajoutez "${normalized}" dans TAX_RATE_TO_RULE_ID si nécessaire.`
-  );
-  return 1; // défaut : groupe 1
-}
-
-/**
- * Crée un produit dans PrestaShop.
- * @param {Object} product    - normalisé par parseProducts
- * @param {number} categoryId
- * @returns {Promise<number>} ID du produit créé
- */
-async function createProduct(product, categoryId) {
-  const availableDate = product.available_date
-    ? product.available_date.split('/').reverse().join('-') // dd/mm/yyyy → yyyy-mm-dd
-    : '0000-00-00';
-
-  const taxRuleId  = resolveTaxRuleId(product.tax_rate);
-  const slugRef    = slugify(product.reference);
-  const priceHt    = Number(product.price_ht)      || 0;
-  const wholesale  = Number(product.wholesale_price) || 0;
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <product>
-    <id_category_default><![CDATA[${categoryId}]]></id_category_default>
-    <id_shop_default><![CDATA[${PRESTA_CONFIG.ID_SHOP}]]></id_shop_default>
-    <id_tax_rules_group><![CDATA[${taxRuleId}]]></id_tax_rules_group>
-    <reference><![CDATA[${product.reference}]]></reference>
-    <price>${priceHt.toFixed(6)}</price>
-    <wholesale_price>${wholesale.toFixed(6)}</wholesale_price>
+    <id_manufacturer><![CDATA[0]]></id_manufacturer>
+    <id_supplier><![CDATA[0]]></id_supplier>
+    <id_category_default><![CDATA[${idCategorie}]]></id_category_default>
+    <id_shop_default><![CDATA[${ID_SHOP}]]></id_shop_default>
+    <id_tax_rules_group><![CDATA[${idTaxGroup}]]></id_tax_rules_group>
+    <reference><![CDATA[${produit.reference}]]></reference>
+    <supplier_reference><![CDATA[]]></supplier_reference>
+    <ean13><![CDATA[]]></ean13>
+    <upc><![CDATA[]]></upc>
+    <price><![CDATA[${prixHT.toFixed(6)}]]></price>
+    <wholesale_price><![CDATA[${produit.prixAchat.toFixed(6)}]]></wholesale_price>
+    <unit_price><![CDATA[0.000000]]></unit_price>
+    <unit_price_ratio><![CDATA[0.000000]]></unit_price_ratio>
     <active><![CDATA[1]]></active>
     <available_for_order><![CDATA[1]]></available_for_order>
     <show_price><![CDATA[1]]></show_price>
+    <online_only><![CDATA[0]]></online_only>
     <visibility><![CDATA[both]]></visibility>
-    <available_date><![CDATA[${availableDate}]]></available_date>
-    <name>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${product.name}]]></language>
-    </name>
-    <description>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </description>
-    <description_short>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${product.name}]]></language>
-    </description_short>
-    <meta_title>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </meta_title>
-    <meta_description>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </meta_description>
-    <meta_keywords>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[]]></language>
-    </meta_keywords>
-    <link_rewrite>
-      <language id="${PRESTA_CONFIG.ID_LANG}"><![CDATA[${slugRef}]]></language>
-    </link_rewrite>
+    <condition><![CDATA[new]]></condition>
+    <state><![CDATA[1]]></state>
+    <available_date><![CDATA[${produit.dateDisponible}]]></available_date>
+    ${blocMultilingue('name',              produit.nom, langIds)}
+    ${blocMultilingue('description',       '',          langIds)}
+    ${blocMultilingue('description_short', '',          langIds)}
+    ${blocMultilingue('meta_title',        produit.nom, langIds)}
+    ${blocMultilingue('meta_description',  '',          langIds)}
+    ${blocMultilingue('meta_keywords',     '',          langIds)}
+    ${blocMultilingue('link_rewrite',      slug,        langIds)}
     <associations>
       <categories>
-        <category><id>${categoryId}</id></category>
+        <category><id><![CDATA[${idCategorie}]]></id></category>
       </categories>
     </associations>
   </product>
 </prestashop>`;
-
-  const result = await prestaWrite('/products', xml, 'POST');
-  const prod   = result.product?.[0] || result.product;
-  const newId  = Number(extraireValeur(prod?.id));
-
-  if (!newId) {
-    throw new Error(
-      `[importProducts] Produit "${product.reference}" non créé — réponse PS inattendue : ${JSON.stringify(result)}`
-    );
-  }
-
-  console.log(`[importProducts] Produit créé : "${product.name}" (${product.reference}) → ID ${newId}`);
-  return newId;
 }
 
-// ─── Fonction principale ──────────────────────────────────────
+// ─── Utilitaire : extraire ID depuis réponse PS ───────────────
 
-/**
- * Importe tous les produits du CSV1.
- *
- * @param {Array}    products   - sortie de parseProductsCsv
- * @param {Object}   imageFiles - Map<reference, File> depuis le ZIP
- * @param {Function} onProgress - callback(message, type)
- * @returns {Promise<Map<string, number>>} Map référence → productId
- */
-export async function importProducts(products, imageFiles = {}, onProgress = () => {}) {
-  const refToId = new Map();
+function extraireIdReponse(reponse, nomRessource) {
+  // Cas 1 : reponse[nomRessource] est un tableau (isArray=true dans le parser)
+  const direct = reponse[nomRessource];
+  if (Array.isArray(direct) && direct.length > 0) return Number(extraireVal(direct[0]?.id));
+  if (direct && !Array.isArray(direct))            return Number(extraireVal(direct?.id));
+  // Cas 2 : reponse[nomRessource + 's'][nomRessource]
+  const pluriel = reponse[nomRessource + 's']?.[nomRessource];
+  if (Array.isArray(pluriel) && pluriel.length > 0) return Number(extraireVal(pluriel[0]?.id));
+  if (pluriel && !Array.isArray(pluriel))            return Number(extraireVal(pluriel?.id));
+  return 0;
+}
 
-  onProgress('Récupération des catégories existantes...', 'info');
-  const catMap = await getExistingCategories();
+// ─── Chargement depuis PS ─────────────────────────────────────
 
-  onProgress('Récupération des produits existants...', 'info');
-  const existingProds = await getExistingProductsByRef();
+async function chargerCategories() {
+  const data  = await prestaGet('/categories?display=full');
+  const bruts = data.categories?.category || [];
+  const liste = Array.isArray(bruts) ? bruts : [bruts];
 
-  for (const product of products) {
+  const map = new Map();
+  for (const c of liste) {
+    const id          = Number(extraireVal(c.id));
+    const nomOriginal = extraireVal(c.name).trim();
+    const nomLower    = nomOriginal.toLowerCase();
+    if (id && nomOriginal) map.set(nomLower, { id, nomOriginal });
+  }
+  return map;
+}
+
+async function chargerReferencesExistantes() {
+  const data  = await prestaGet('/products?display=[id,reference]');
+  const bruts = data.products?.product || [];
+  const liste = Array.isArray(bruts) ? bruts : [bruts];
+  const refs  = new Set();
+  for (const p of liste) {
+    const ref = extraireVal(p.reference).trim();
+    if (ref) refs.add(ref);
+  }
+  return refs;
+}
+
+// ─── Import principal ─────────────────────────────────────────
+
+export async function importerProduits(produits, onLog) {
+  const log = (type, message, ref = '') => onLog({ type, message, ref });
+  const bilan = { crees: 0, skips: 0, erreurs: 0, details: [] };
+
+  // ── Étape 0 : Langues actives ─────────────────────────────
+  log('info', 'Chargement des langues PrestaShop actives…');
+  const langIds = await chargerLangues();
+  log('info', `Langues actives : [${langIds.join(', ')}]`);
+
+  // ── Étape 1 : Tax mapping ─────────────────────────────────
+  log('info', 'Chargement des groupes de taxes PrestaShop…');
+  let taxMapping;
+  try {
+    taxMapping = await chargerTaxMapping();
+    log('info', `${taxMapping.size} groupe(s) de taxe chargé(s)`);
+  } catch (err) {
+    log('erreur', `Impossible de charger les taxes PS : ${err.message}`);
+    throw err;
+  }
+
+  // ── Étape 2 : Catégories existantes ──────────────────────
+  log('info', 'Chargement des catégories PrestaShop existantes…');
+  let categoriesMap;
+  try {
+    categoriesMap = await chargerCategories();
+    log('info', `${categoriesMap.size} catégorie(s) existante(s)`);
+  } catch (err) {
+    log('erreur', `Impossible de charger les catégories PS : ${err.message}`);
+    throw err;
+  }
+
+  // ── Étape 3 : Créer les catégories manquantes ─────────────
+  const catsCSV = new Map();
+  for (const p of produits) {
+    const key = p.categorie.toLowerCase().trim();
+    if (!catsCSV.has(key)) catsCSV.set(key, p.categorie.trim());
+  }
+
+  for (const [nomLower, nomOriginal] of catsCSV) {
+    if (categoriesMap.has(nomLower)) {
+      log('info', `Catégorie existante : "${nomOriginal}" (id=${categoriesMap.get(nomLower).id})`);
+      continue;
+    }
+
     try {
-      // ── Validation minimale avant tout appel réseau ──
-      if (!product.reference?.trim()) {
-        onProgress(`⚠ Produit ignoré : référence manquante dans le CSV`, 'warning');
-        continue;
-      }
-      if (!product.category_name?.trim()) {
-        onProgress(`⚠ Produit ${product.reference} ignoré : catégorie manquante`, 'warning');
-        continue;
+      const xml    = buildCategorieXml(nomOriginal, langIds);
+      const reponse = await prestaWrite('/categories', xml, 'POST');
+      const idNouv  = extraireIdReponse(reponse, 'category');
+
+      if (!idNouv) {
+        throw new Error(`ID catégorie non retourné — réponse : ${JSON.stringify(reponse).slice(0, 200)}`);
       }
 
-      // ── Catégorie ──
-      const catId = await getOrCreateCategory(product.category_name.trim(), catMap);
-
-      // ── Produit ──
-      let productId;
-      if (existingProds.has(product.reference)) {
-        productId = existingProds.get(product.reference);
-        onProgress(`⏭ Produit existant réutilisé : ${product.reference} (ID ${productId})`, 'skip');
-      } else {
-        productId = await createProduct(product, catId);
-        onProgress(`✅ Produit créé : ${product.name} (${product.reference})`, 'success');
-      }
-
-      refToId.set(product.reference, productId);
-
-      // ── Image ──
-      const imageFile = imageFiles[product.reference];
-      if (imageFile && !existingProds.has(product.reference)) {
-        try {
-          await prestaUploadImage(productId, imageFile);
-          onProgress(`🖼 Image uploadée pour ${product.reference}`, 'success');
-        } catch (imgErr) {
-          onProgress(`⚠ Image ${product.reference} : ${imgErr.message}`, 'warning');
-        }
-      }
-
+      categoriesMap.set(nomLower, { id: idNouv, nomOriginal });
+      log('succes', `Catégorie créée : "${nomOriginal}" → id=${idNouv}`);
     } catch (err) {
-      onProgress(`❌ Erreur produit ${product.reference} : ${err.message}`, 'error');
+      log('erreur', `Impossible de créer la catégorie "${nomOriginal}" : ${err.message}`);
     }
   }
 
-  const total = refToId.size;
-  onProgress(`✅ ${total} produit(s) importé(s)`, total > 0 ? 'success' : 'warning');
-  return refToId;
+  // ── Étape 4 : Références existantes ──────────────────────
+  log('info', 'Vérification des références produits existantes…');
+  let referencesExistantes;
+  try {
+    referencesExistantes = await chargerReferencesExistantes();
+    log('info', `${referencesExistantes.size} référence(s) existante(s) dans PS`);
+  } catch (err) {
+    log('erreur', `Impossible de charger les références : ${err.message}`);
+    throw err;
+  }
+
+  // ── Étape 5 : Insérer chaque produit ─────────────────────
+  log('info', `Début de l'import — ${produits.length} produit(s) à traiter`);
+
+  for (const produit of produits) {
+    const ref = produit.reference;
+
+    if (referencesExistantes.has(ref)) {
+      log('warning', `Référence déjà existante, ignorée : "${ref}"`, ref);
+      bilan.skips++;
+      bilan.details.push({ ref, statut: 'skip', raison: 'Référence déjà existante' });
+      continue;
+    }
+
+    // Tax group
+    let taxResult;
+    try {
+      taxResult = await resoudreTaxGroup(
+        `${produit.tauxTVA}%`,
+        taxMapping,
+        (type, msg) => log(type, msg, ref)
+      );
+    } catch (err) {
+      log('erreur', `Tax group : ${err.message}`, ref);
+      bilan.erreurs++;
+      bilan.details.push({ ref, statut: 'erreur', raison: err.message });
+      continue;
+    }
+
+    const { idTaxGroup, tauxNum } = taxResult;
+    const prixHT = ttcVersHT(produit.prixTTC, tauxNum);
+    log('info', `"${ref}" : ${produit.prixTTC} TTC → ${prixHT.toFixed(4)} HT (TVA ${tauxNum}%)`, ref);
+
+    // Catégorie
+    const nomCatLower = produit.categorie.toLowerCase().trim();
+    const catEntry    = categoriesMap.get(nomCatLower);
+
+    if (!catEntry) {
+      const msg = `Catégorie "${produit.categorie}" introuvable`;
+      log('erreur', msg, ref);
+      bilan.erreurs++;
+      bilan.details.push({ ref, statut: 'erreur', raison: msg });
+      continue;
+    }
+
+    // POST /products
+    try {
+      const xml    = buildProduitXml(produit, catEntry.id, idTaxGroup, prixHT, langIds);
+      const reponse = await prestaWrite('/products', xml, 'POST');
+      const idProd  = extraireIdReponse(reponse, 'product');
+
+      if (!idProd) {
+        throw new Error(`PS a répondu sans ID produit — réponse : ${JSON.stringify(reponse).slice(0, 200)}`);
+      }
+
+      referencesExistantes.add(ref);
+      log('succes', `Produit créé : "${produit.nom}" (ref=${ref}, id=${idProd})`, ref);
+      bilan.crees++;
+      bilan.details.push({ ref, statut: 'succes', idProduit: idProd });
+
+    } catch (err) {
+      log('erreur', `Échec création produit "${ref}" : ${err.message}`, ref);
+      bilan.erreurs++;
+      bilan.details.push({ ref, statut: 'erreur', raison: err.message });
+    }
+  }
+
+  log('info', `Import terminé — ✓ ${bilan.crees} créé(s) · ⚠ ${bilan.skips} ignoré(s) · ✗ ${bilan.erreurs} erreur(s)`);
+  return bilan;
 }
