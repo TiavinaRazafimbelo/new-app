@@ -597,3 +597,31 @@
 .tableau-jour__icone {
   margin-right: 6px;
 }
+
+/* ─── Réductions paniers ─────────────────────────────────────── */
+.badge-reduction,
+.badge-reduction-dash {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.montant-reduction-total {
+  color: #92400e;
+}
+
+.montant--muted {
+  color: #9ca3af;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.col-reduction {
+  white-space: nowrap;
+}

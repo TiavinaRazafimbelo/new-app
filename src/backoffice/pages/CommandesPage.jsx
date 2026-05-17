@@ -204,8 +204,10 @@ function TableauPaniers({ paniers }) {
     );
   }
 
-  const totalMontant  = paniers.reduce((s, p) => s + (p.montantTotal || 0), 0);
-  const totalArticles = paniers.reduce((s, p) => s + (p.nbArticles || 0), 0);
+  const totalMontant    = paniers.reduce((s, p) => s + (p.montantTotal    || 0), 0);
+  const totalArticles   = paniers.reduce((s, p) => s + (p.nbArticles      || 0), 0);
+  const totalReductions = paniers.reduce((s, p) => s + (p.totalReductions || 0), 0);
+  const hasReductions   = paniers.some((p) => (p.totalReductions || 0) > 0);
 
   return (
     <div className="commandes-contenu">
@@ -217,6 +219,8 @@ function TableauPaniers({ paniers }) {
               <th className="col-client">Client</th>
               <th className="col-date">Date</th>
               <th className="col-nb-art">Nb articles</th>
+              {hasReductions && <th className="col-total">Sous-total</th>}
+              {hasReductions && <th className="col-reduction">Réduction</th>}
               <th className="col-total">Total TTC</th>
               <th className="col-statut">Statut</th>
             </tr>
@@ -249,6 +253,26 @@ function TableauPaniers({ paniers }) {
                 <td className="col-nb-art">
                   <span className="badge-nb-art">{p.nbArticles}</span>
                 </td>
+                {hasReductions && (
+                  <td className="col-total">
+                    <span className="montant montant--muted">{montantFR(p.sousTotal || p.montantTotal)}</span>
+                  </td>
+                )}
+                {hasReductions && (
+                  <td className="col-reduction">
+                    {(p.totalReductions || 0) > 0 ? (
+                      <span
+                        className="badge-reduction"
+                        title={(p.promos || []).map((pr) => `${pr.nom} : −${montantFR(pr.montant)}`).join(' | ')}
+                      >
+                        −{montantFR(p.totalReductions)}
+                        {p.promos?.length > 0 && <span className="badge-reduction__hint"> ⓘ</span>}
+                      </span>
+                    ) : (
+                      <span className="texte-muted">—</span>
+                    )}
+                  </td>
+                )}
                 <td className="col-total">
                   <span className="montant">{montantFR(p.montantTotal)}</span>
                 </td>
@@ -267,6 +291,16 @@ function TableauPaniers({ paniers }) {
               <td className="col-nb-art tfoot-val">
                 <strong>{totalArticles}</strong>
               </td>
+              {hasReductions && (
+                <td className="col-total tfoot-val">
+                  <strong>{montantFR(paniers.reduce((s, p) => s + (p.sousTotal || p.montantTotal || 0), 0))}</strong>
+                </td>
+              )}
+              {hasReductions && (
+                <td className="col-reduction tfoot-val">
+                  <strong className="montant-reduction-total">−{montantFR(totalReductions)}</strong>
+                </td>
+              )}
               <td className="col-total tfoot-val">
                 <strong>{montantFR(totalMontant)}</strong>
               </td>

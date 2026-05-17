@@ -18,16 +18,10 @@ export default {
           });
         },
       },
-
-      // ── Endpoint custom module stockajax ──────────────────
-      // Utilisé par callCustomStockEndpoint dans stockService.js
-      // URL cote JS : /presta/index.php?fc=module&module=stockajax&controller=update
-      // Proxy reecrit vers : /index.php?fc=module&...
-      '/presta': {
+      '/updatestock': {
         target: 'http://localhost/prestashop_edition_classic_version_8.2.6',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/presta/, ''),
-      },
+      }
 
     },
   },

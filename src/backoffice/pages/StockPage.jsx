@@ -2,43 +2,62 @@
  * StockPage.jsx
  * ─────────────────────────────────────────────────────────────
  * Page de gestion du stock — Backoffice PrestaShop
- * Refactorisée pour utiliser stockService.js
  *
- * FONCTIONNALITÉS :
- *   1. Ajout/retrait de stock (delta ou valeur absolue)
- *      - Si ligne stock existe → PUT /stock_availables/:id
- *      - Si ligne manquante   → endpoint custom PrestaShop
- *        (StockAvailable::updateQuantity)
+ * FONCTIONNALITES :
+ *   1. Ajout/retrait de stock par delta
+ *      - Bloque si aucune ligne stock n'existe
+ *      - Bloque si le stock deviendrait negatif
  *
- *   2. Graphique d'évolution avec snapshot manuel/auto
- *      - Historique en sessionStorage
- *      - Tableau des variations
+ *   2. Graphique d'evolution + tableau des mouvements
+ *      - Donnees lues depuis ps_stock_mvt (via GET /updatestock?action=history)
+ *      - Pas de sessionStorage ni de snapshot
+ *      - Rechargement automatique apres chaque modification
  * ─────────────────────────────────────────────────────────────
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getProductsForStock,
   getCombinaisonsForStock,
   getStocksForProduct,
   findStockItem,
   applyStockDelta,
-  setAbsoluteStock,
-  chargerHistorique,
-  sauvegarderHistorique,
-  cleHistorique,
-  ajouterPointHistorique,
+  getStockHistory,
 } from '../services/stockService';
 import './StockPage.css';
 
-// ─── SVG Sparkline ────────────────────────────────────────────
+// ─── Graphique SVG ────────────────────────────────────────────
 
-function StockChart({ points, color = '#2563a8' }) {
-  if (!points || points.length < 2) {
+function StockChart({ movements, currentQty }) {
+  // Construire les points depuis les mouvements (du plus ancien au plus recent)
+  // On reconstitue le stock dans le temps en partant du stock actuel
+  const points = (() => {
+    if (!movements || movements.length === 0) return [];
+
+    // Les mouvements arrivent du plus recent au plus ancien (ORDER BY date_add DESC)
+    // On les inverse pour reconstituer la chronologie
+    const chrono = [...movements].reverse();
+
+    // Partir du stock actuel et remonter dans le temps
+    let qty = currentQty;
+    const pts = [{ label: 'Actuel', qty, date: 'maintenant' }];
+
+    for (const mvt of chrono) {
+      // Annuler le mouvement pour revenir en arriere
+      qty -= mvt.quantity;
+      const date = new Date(mvt.date);
+      const label = `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+      pts.push({ label, qty: Math.max(0, qty), date: mvt.date });
+    }
+
+    return pts.reverse(); // du plus ancien au plus recent
+  })();
+
+  if (points.length < 2) {
     return (
       <div className="chart-empty">
         <span className="chart-empty__icon">📊</span>
-        <p>Sélectionnez un produit et faites un snapshot pour voir l'évolution</p>
+        <p>Aucun mouvement de stock enregistré pour ce produit</p>
       </div>
     );
   }
@@ -66,7 +85,7 @@ function StockChart({ points, color = '#2563a8' }) {
     val: Math.round(minQ + f * range),
   }));
 
-  const step    = Math.max(1, Math.ceil(points.length / 6));
+  const step    = Math.max(1, Math.ceil(points.length / 5));
   const xLabels = points
     .map((p, i) => ({ p, i }))
     .filter(({ i }) => i % step === 0 || i === points.length - 1);
@@ -75,8 +94,8 @@ function StockChart({ points, color = '#2563a8' }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="stock-chart-svg" preserveAspectRatio="xMidYMid meet">
       <defs>
         <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={color} stopOpacity="0.18" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.01" />
+          <stop offset="0%"   stopColor="#2563a8" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="#2563a8" stopOpacity="0.01" />
         </linearGradient>
         <filter id="glow">
           <feGaussianBlur stdDeviation="2" result="blur" />
@@ -96,17 +115,17 @@ function StockChart({ points, color = '#2563a8' }) {
       ))}
 
       <path d={areaD} fill="url(#areaGrad)" />
-      <path d={pathD} fill="none" stroke={color} strokeWidth="2.2"
+      <path d={pathD} fill="none" stroke="#2563a8" strokeWidth="2.2"
         strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)" />
 
       {points.map((p, i) => (
         <circle key={i} cx={toX(i)} cy={toY(p.qty)} r="3.5"
-          fill="#fff" stroke={color} strokeWidth="2" />
+          fill="#fff" stroke="#2563a8" strokeWidth="2" />
       ))}
 
       {xLabels.map(({ p, i }) => (
         <text key={i} x={toX(i)} y={H - 8} textAnchor="middle"
-          fontSize="10" fill="#6b6860" fontFamily="'IBM Plex Mono', monospace">
+          fontSize="9" fill="#6b6860" fontFamily="'IBM Plex Mono', monospace">
           {p.label}
         </text>
       ))}
@@ -117,32 +136,29 @@ function StockChart({ points, color = '#2563a8' }) {
 // ─── Composant principal ──────────────────────────────────────
 
 export default function StockPage() {
-  // ── Section ajout de stock ──────────────────────────────────
+  // ── Formulaire ──────────────────────────────────────────────
   const [products,      setProducts]      = useState([]);
   const [selectedProd,  setSelectedProd]  = useState('');
   const [combinations,  setCombinations]  = useState([]);
   const [selectedCombi, setSelectedCombi] = useState('');
   const [stocks,        setStocks]        = useState([]);
   const [currentStock,  setCurrentStock]  = useState(null);
-  const [modeInput,     setModeInput]     = useState('delta'); // 'delta' | 'absolu'
   const [deltaQty,      setDeltaQty]      = useState('');
-  const [absolQty,      setAbsolQty]      = useState('');
 
   const [loadingProds,  setLoadingProds]  = useState(true);
   const [loadingCombi,  setLoadingCombi]  = useState(false);
   const [saving,        setSaving]        = useState(false);
 
-  // ── Section graphique ───────────────────────────────────────
+  // ── Graphique / Historique ───────────────────────────────────
   const [chartProd,     setChartProd]     = useState('');
   const [chartCombi,    setChartCombi]    = useState('');
   const [chartCombis,   setChartCombis]   = useState([]);
-  const [chartStock,    setChartStock]    = useState(null);
-  const [loadingChart,  setLoadingChart]  = useState(false);
-  const [history,       setHistory]       = useState(chargerHistorique);
+  const [historyData,   setHistoryData]   = useState(null);  // { current_qty, movements }
+  const [loadingHist,   setLoadingHist]   = useState(false);
 
-  // ── Toast ───────────────────────────────────────────────────
-  const [toast, setToast]     = useState(null);
-  const toastTimer            = useRef(null);
+  // ── Toast ────────────────────────────────────────────────────
+  const [toast,     setToast]     = useState(null);
+  const toastTimer                = useRef(null);
 
   function showToast(msg, type = 'succes') {
     setToast({ msg, type });
@@ -150,7 +166,7 @@ export default function StockPage() {
     toastTimer.current = setTimeout(() => setToast(null), 3500);
   }
 
-  // ── Charger les produits ────────────────────────────────────
+  // ── Chargement produits ──────────────────────────────────────
   useEffect(() => {
     setLoadingProds(true);
     getProductsForStock()
@@ -159,20 +175,15 @@ export default function StockPage() {
       .finally(() => setLoadingProds(false));
   }, []);
 
-  // ── Produit sélectionné → charger combis + stocks ───────────
+  // ── Produit formulaire → combis + stocks ─────────────────────
   useEffect(() => {
     if (!selectedProd) {
-      setCombinations([]);
-      setSelectedCombi('');
-      setStocks([]);
-      setCurrentStock(null);
+      setCombinations([]); setSelectedCombi('');
+      setStocks([]); setCurrentStock(null);
       return;
     }
-
     setLoadingCombi(true);
-    setSelectedCombi('');
-    setCombinations([]);
-    setCurrentStock(null);
+    setSelectedCombi(''); setCombinations([]); setCurrentStock(null);
 
     Promise.all([
       getCombinaisonsForStock(selectedProd),
@@ -181,60 +192,76 @@ export default function StockPage() {
       .then(([combis, stks]) => {
         setCombinations(combis);
         setStocks(stks);
-        // Stock de base par défaut
         setCurrentStock(findStockItem(stks, '0'));
       })
       .catch((err) => showToast(`Chargement : ${err.message}`, 'erreur'))
       .finally(() => setLoadingCombi(false));
   }, [selectedProd]);
 
-  // ── Combinaison change → mettre à jour currentStock ─────────
+  // ── Combinaison formulaire change ────────────────────────────
   useEffect(() => {
     if (!selectedProd) return;
     setCurrentStock(findStockItem(stocks, selectedCombi));
   }, [selectedCombi, stocks]);
 
-  // ── Soumettre la modification de stock ──────────────────────
+  // ── Chargement historique ─────────────────────────────────────
+  const chargerHistorique = useCallback(async () => {
+    if (!chartProd) return;
+    setLoadingHist(true);
+    try {
+      const data = await getStockHistory(chartProd, chartCombi, 50);
+      setHistoryData(data);
+    } catch (err) {
+      showToast(`Historique : ${err.message}`, 'erreur');
+      setHistoryData(null);
+    } finally {
+      setLoadingHist(false);
+    }
+  }, [chartProd, chartCombi]);
+
+  useEffect(() => {
+    setHistoryData(null);
+    chargerHistorique();
+  }, [chargerHistorique]);
+
+  // ── Combis graphique ─────────────────────────────────────────
+  useEffect(() => {
+    if (!chartProd) { setChartCombis([]); setChartCombi(''); setHistoryData(null); return; }
+    getCombinaisonsForStock(chartProd)
+      .then((c) => { setChartCombis(c); setChartCombi(''); })
+      .catch(() => setChartCombis([]));
+  }, [chartProd]);
+
+  // ── Soumission formulaire ─────────────────────────────────────
   async function handleSubmitStock(e) {
     e.preventDefault();
-
     if (!selectedProd) { showToast('Sélectionnez un produit', 'erreur'); return; }
+
+    const delta = parseInt(deltaQty);
+    if (isNaN(delta) || delta === 0) {
+      showToast('Quantité invalide (ne peut pas être 0)', 'erreur');
+      return;
+    }
 
     setSaving(true);
     try {
-      let result;
+      const result = await applyStockDelta(currentStock, selectedProd, selectedCombi, delta);
 
-      if (modeInput === 'delta') {
-        const delta = parseInt(deltaQty);
-        if (isNaN(delta) || delta === 0) throw new Error('Quantité invalide (ne peut pas être 0)');
-        result = await applyStockDelta(currentStock, selectedProd, selectedCombi, delta);
-      } else {
-        const target = parseInt(absolQty);
-        if (isNaN(target) || target < 0) throw new Error('Quantité absolue invalide');
-        result = await setAbsoluteStock(currentStock, selectedProd, selectedCombi, target);
-      }
-
-      const { newQty, createdNew } = result;
-
-      // Rafraîchir les stocks locaux
+      // Rafraichir le stock affiche
       const stksRefresh = await getStocksForProduct(selectedProd);
       setStocks(stksRefresh);
       setCurrentStock(findStockItem(stksRefresh, selectedCombi));
 
-      // Ajouter au graphique si même produit/combi observé
+      // Rafraichir l'historique si meme produit/combi observe
       if (chartProd === selectedProd && chartCombi === selectedCombi) {
-        const newHistory = ajouterPointHistorique(history, selectedProd, selectedCombi, newQty);
-        setHistory(newHistory);
-        sauvegarderHistorique(newHistory);
-        setChartStock(findStockItem(stksRefresh, selectedCombi));
+        await chargerHistorique();
       }
 
       showToast(
-        `${createdNew ? 'Ligne créée — ' : ''}Stock mis à jour → ${newQty} unités`,
+        `Stock mis à jour : ${result.qtyBefore} → ${result.newQty} unités`,
         'succes'
       );
       setDeltaQty('');
-      setAbsolQty('');
     } catch (err) {
       showToast(`Erreur : ${err.message}`, 'erreur');
     } finally {
@@ -242,65 +269,27 @@ export default function StockPage() {
     }
   }
 
-  // ── Snapshot graphique ──────────────────────────────────────
-  async function snapshotChartStock() {
-    if (!chartProd) return;
-    setLoadingChart(true);
-    try {
-      const stks  = await getStocksForProduct(chartProd);
-      const match = findStockItem(stks, chartCombi);
-      if (!match) { showToast('Aucun stock trouvé pour ce produit/combinaison', 'erreur'); return; }
-
-      setChartStock(match);
-      const newHistory = ajouterPointHistorique(history, chartProd, chartCombi, match.quantity);
-      setHistory(newHistory);
-      sauvegarderHistorique(newHistory);
-    } catch (err) {
-      showToast(`Snapshot : ${err.message}`, 'erreur');
-    } finally {
-      setLoadingChart(false);
-    }
-  }
-
-  // ── Combis pour le graphique ────────────────────────────────
-  useEffect(() => {
-    if (!chartProd) { setChartCombis([]); setChartCombi(''); setChartStock(null); return; }
-    getCombinaisonsForStock(chartProd)
-      .then((c) => { setChartCombis(c); setChartCombi(''); })
-      .catch(() => setChartCombis([]));
-  }, [chartProd]);
-
-  // ── Snapshot auto quand chartProd/chartCombi change ─────────
-  useEffect(() => {
-    if (chartProd) snapshotChartStock();
-  }, [chartProd, chartCombi]);
-
-  const chartPoints = history[cleHistorique(chartProd, chartCombi)] || [];
-
-  // Calcul aperçu delta
+  // Aperçu du nouveau stock
   const deltaPreview = (() => {
-    if (modeInput === 'delta' && deltaQty !== '' && currentStock !== null) {
-      const d = parseInt(deltaQty) || 0;
-      if (d !== 0) return (currentStock?.quantity ?? 0) + d;
-    }
-    return null;
+    if (deltaQty === '' || !currentStock) return null;
+    const d = parseInt(deltaQty) || 0;
+    return d !== 0 ? currentStock.quantity + d : null;
   })();
 
-  // ─── Render ────────────────────────────────────────────────
+  // ─── Rendu ────────────────────────────────────────────────────
   return (
     <div className="stock-page">
 
-      {/* En-tête */}
       <div className="stock-entete">
         <div className="stock-entete__titre">
           <h2>Gestion du stock</h2>
-          <p className="stock-entete__sub">Ajustez les niveaux et suivez l'évolution</p>
+          <p className="stock-entete__sub">Ajustez les niveaux et suivez les mouvements</p>
         </div>
       </div>
 
       <div className="stock-grid">
 
-        {/* ── Panneau gauche : ajout / retrait ─────────────── */}
+        {/* ── Panneau gauche : formulaire ───────────────────── */}
         <section className="stock-card">
           <div className="stock-card__header">
             <h3>Ajout / Retrait de stock</h3>
@@ -311,9 +300,7 @@ export default function StockPage() {
             {/* Produit */}
             <div className="form-groupe">
               <label className="form-label">Produit</label>
-              {loadingProds ? (
-                <div className="skeleton-select" />
-              ) : (
+              {loadingProds ? <div className="skeleton-select" /> : (
                 <select
                   className="form-select"
                   value={selectedProd}
@@ -338,9 +325,7 @@ export default function StockPage() {
                   <span className="form-label__hint"> — produit simple</span>
                 )}
               </label>
-              {loadingCombi ? (
-                <div className="skeleton-select" />
-              ) : (
+              {loadingCombi ? <div className="skeleton-select" /> : (
                 <select
                   className="form-select"
                   value={selectedCombi}
@@ -350,14 +335,14 @@ export default function StockPage() {
                   <option value="">— Produit de base —</option>
                   {combinations.map((c) => (
                     <option key={c.id} value={c.id}>
-                      #{c.id}  — Réf: {c.reference}
+                      #{c.id} — Réf: {c.reference}
                     </option>
                   ))}
                 </select>
               )}
             </div>
 
-            {/* Stock actuel + statut de la ligne */}
+            {/* Stock actuel */}
             {selectedProd && !loadingCombi && (
               <div className={`stock-actuel ${currentStock ? '' : 'stock-actuel--absent'}`}>
                 {currentStock ? (
@@ -371,121 +356,69 @@ export default function StockPage() {
                     <span className="stock-absent__icon">⚠</span>
                     <div>
                       <strong>Aucune ligne de stock</strong>
-                      <p>La ligne sera créée automatiquement via l'endpoint PrestaShop</p>
+                      <p>Créez un stock initial dans PrestaShop pour ce produit.</p>
                     </div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Mode : delta ou absolu */}
+            {/* Delta */}
             <div className="form-groupe">
-              <label className="form-label">Mode de saisie</label>
-              <div className="mode-toggle">
+              <label className="form-label">
+                Quantité à ajouter
+                <span className="form-label__hint"> (négatif pour retirer)</span>
+              </label>
+              <div className="delta-input-wrapper">
                 <button
                   type="button"
-                  className={`mode-btn ${modeInput === 'delta' ? 'mode-btn--active' : ''}`}
-                  onClick={() => setModeInput('delta')}
-                >
-                  ± Delta
-                </button>
-                <button
-                  type="button"
-                  className={`mode-btn ${modeInput === 'absolu' ? 'mode-btn--active' : ''}`}
-                  onClick={() => setModeInput('absolu')}
-                >
-                  = Valeur absolue
-                </button>
-              </div>
-            </div>
-
-            {/* Input quantité */}
-            {modeInput === 'delta' ? (
-              <div className="form-groupe">
-                <label className="form-label">
-                  Quantité à ajouter
-                  <span className="form-label__hint"> (négatif pour retirer)</span>
-                </label>
-                <div className="delta-input-wrapper">
-                  <button
-                    type="button"
-                    className="delta-btn"
-                    onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) - 1))}
-                  >−</button>
-                  <input
-                    type="number"
-                    className="form-input delta-input"
-                    value={deltaQty}
-                    onChange={(e) => setDeltaQty(e.target.value)}
-                    placeholder="ex : 50"
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="delta-btn"
-                    onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) + 1))}
-                  >+</button>
-                </div>
-                {deltaPreview !== null && (
-                  <div className={`delta-preview ${deltaPreview < (currentStock?.quantity ?? 0) ? 'delta-preview--down' : 'delta-preview--up'}`}>
-                    {deltaPreview < (currentStock?.quantity ?? 0) ? '▼' : '▲'}{' '}
-                    Nouveau stock : <strong>{deltaPreview}</strong>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="form-groupe">
-                <label className="form-label">Quantité absolue cible</label>
+                  className="delta-btn"
+                  onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) - 1))}
+                >−</button>
                 <input
                   type="number"
-                  min="0"
-                  className="form-input"
-                  value={absolQty}
-                  onChange={(e) => setAbsolQty(e.target.value)}
-                  placeholder="ex : 300"
+                  className="form-input delta-input"
+                  value={deltaQty}
+                  onChange={(e) => setDeltaQty(e.target.value)}
+                  placeholder="ex : 50"
                   required
                 />
-                {absolQty !== '' && currentStock && (
-                  <div className={`delta-preview ${Number(absolQty) < currentStock.quantity ? 'delta-preview--down' : 'delta-preview--up'}`}>
-                    {Number(absolQty) < currentStock.quantity ? '▼' : '▲'}{' '}
-                    {currentStock.quantity} → <strong>{absolQty}</strong>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  className="delta-btn"
+                  onClick={() => setDeltaQty((v) => String((parseInt(v) || 0) + 1))}
+                >+</button>
               </div>
-            )}
+              {deltaPreview !== null && (
+                <div className={`delta-preview ${deltaPreview < (currentStock?.quantity ?? 0) ? 'delta-preview--down' : 'delta-preview--up'}`}>
+                  {deltaPreview < (currentStock?.quantity ?? 0) ? '▼' : '▲'}{' '}
+                  Nouveau stock : <strong>{deltaPreview}</strong>
+                </div>
+              )}
+            </div>
 
             <button
               type="submit"
               className={`btn-submit ${saving ? 'btn-submit--loading' : ''}`}
-              disabled={saving || !selectedProd}
+              disabled={saving || !selectedProd || !currentStock}
             >
               {saving
                 ? <><span className="btn-spinner" /> Mise à jour…</>
                 : <>✓ Appliquer la modification</>
               }
             </button>
+
           </form>
         </section>
 
-        {/* ── Panneau droit : graphique ────────────────────── */}
+        {/* ── Panneau droit : graphique + historique ────────── */}
         <section className="stock-card">
           <div className="stock-card__header">
             <h3>Évolution du stock</h3>
-            <button
-              className="btn-snapshot"
-              onClick={snapshotChartStock}
-              disabled={!chartProd || loadingChart}
-              title="Capturer le stock actuel"
-            >
-              {loadingChart
-                ? <span className="btn-spinner btn-spinner--sm" />
-                : '📸'
-              }{' '}
-              Snapshot
-            </button>
+            {loadingHist && <span className="btn-spinner btn-spinner--sm" />}
           </div>
 
-          {/* Sélecteurs graphe */}
+          {/* Sélecteurs */}
           <div className="chart-selectors">
             <select
               className="form-select form-select--sm"
@@ -508,69 +441,86 @@ export default function StockPage() {
             >
               <option value="">— Produit de base —</option>
               {chartCombis.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
+                <option key={c.id} value={c.id}>{c.label}</option>
               ))}
             </select>
           </div>
 
-          {/* Méta stock actuel */}
-          {chartStock && (
+          {/* Stock actuel observe */}
+          {historyData && (
             <div className="chart-meta">
-              <span className="chart-meta__qty">{chartStock.quantity}</span>
+              <span className="chart-meta__qty">{historyData.current_qty}</span>
               <span className="chart-meta__label">unités actuellement</span>
-              {chartPoints.length > 1 && (() => {
-                const diff = chartPoints[chartPoints.length - 1].qty - chartPoints[0].qty;
+              {historyData.movements.length > 0 && (() => {
+                const total = historyData.movements.reduce((s, m) => s + m.quantity, 0);
                 return (
-                  <span className={`chart-meta__delta ${diff >= 0 ? 'chart-meta__delta--up' : 'chart-meta__delta--down'}`}>
-                    {diff >= 0 ? '▲' : '▼'} {Math.abs(diff)}
+                  <span className={`chart-meta__delta ${total >= 0 ? 'chart-meta__delta--up' : 'chart-meta__delta--down'}`}>
+                    {total >= 0 ? '▲' : '▼'} {Math.abs(total)} sur {historyData.total} mouvements
                   </span>
                 );
               })()}
             </div>
           )}
 
-          {/* SVG Chart */}
+          {/* Graphique */}
           <div className="chart-area">
-            <StockChart points={chartPoints} />
+            {historyData ? (
+              <StockChart
+                movements={historyData.movements}
+                currentQty={historyData.current_qty}
+              />
+            ) : (
+              !loadingHist && (
+                <div className="chart-empty">
+                  <span className="chart-empty__icon">📊</span>
+                  <p>Sélectionnez un produit pour voir l'évolution</p>
+                </div>
+              )
+            )}
           </div>
 
-          {/* Tableau historique */}
-          {chartPoints.length > 0 && (
+          {/* Tableau des mouvements */}
+          {historyData && historyData.movements.length > 0 && (
             <div className="chart-history">
               <table className="history-table">
                 <thead>
                   <tr>
-                    <th>Heure</th>
-                    <th>Stock</th>
-                    <th>Variation</th>
+                    <th>Date</th>
+                    <th>Mouvement</th>
+                    <th>Raison</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {[...chartPoints].reverse().map((p, i, arr) => {
-                    const prev = arr[i + 1];
-                    const diff = prev != null ? p.qty - prev.qty : null;
-                    return (
-                      <tr key={i}>
-                        <td className="history-time">{p.label}</td>
-                        <td className="history-qty">{p.qty}</td>
-                        <td>
-                          {diff !== null ? (
-                            <span className={`history-delta ${diff > 0 ? 'history-delta--up' : diff < 0 ? 'history-delta--down' : ''}`}>
-                              {diff > 0 ? '+' : ''}{diff}
-                            </span>
-                          ) : <span className="history-delta">—</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {historyData.movements.map((mvt) => (
+                    <tr key={mvt.id}>
+                      <td className="history-time">
+                        {new Date(mvt.date).toLocaleString('fr-FR', {
+                          day:    '2-digit',
+                          month:  '2-digit',
+                          hour:   '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </td>
+                      <td>
+                        <span className={`history-delta ${mvt.quantity > 0 ? 'history-delta--up' : 'history-delta--down'}`}>
+                          {mvt.quantity > 0 ? '+' : ''}{mvt.quantity}
+                        </span>
+                      </td>
+                      <td className="history-reason">{mvt.reason}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
           )}
-        </section>
 
+          {historyData && historyData.movements.length === 0 && (
+            <div className="chart-empty" style={{ padding: '24px' }}>
+              <p>Aucun mouvement enregistré pour ce produit/combinaison.</p>
+            </div>
+          )}
+
+        </section>
       </div>
 
       {/* Toast */}

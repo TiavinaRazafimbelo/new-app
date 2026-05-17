@@ -527,3 +527,11 @@
 .toast--succes    { background: var(--c-vert-bg); color: var(--c-vert); border: 1px solid #bbf7d0; }
 .toast--erreur    { background: var(--c-rouge-bg); color: var(--c-rouge); border: 1px solid #fca5a5; }
 .toast__icone     { font-size: 14px; font-weight: 700; }
+
+/* Ajouter à la fin de StockPage.css */
+
+.history-reason {
+  font-size: 11px;
+  color: var(--c-texte-doux);
+  font-style: italic;
+}
