@@ -25,6 +25,8 @@ const NAV_LIENS = [
   { path: '/backoffice/commandes', label: 'Commandes',        icone: '' },
   { path: '/backoffice/stock',     label: 'Stock',            icone: '' },
   { path: '/backoffice/import',    label: 'Import',           icone: '' },
+  { path: '/backoffice/import/combinaisons', label: 'Import Déclinaisons', icone: '' },
+  { path: '/backoffice/import/commandes',    label: 'Import Commandes',   icone: '' }, // ← NOUVEAU
   { path: '/backoffice/reset',     label: 'Reset Data',       icone: '' },
 ];
 

@@ -80,7 +80,7 @@ async function psWrite(endpoint, xmlBody, method = 'POST') {
 
 const SHOP = {
   ID_SHOP:       1,
-  ID_SHOP_GROUP: 1,
+  ID_SHOP_GROUP: 0,
   ID_CURRENCY:   1,
   ID_LANG:       1,
   ID_CARRIER:    2,

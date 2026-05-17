@@ -296,7 +296,7 @@ function extraireImageId(produit) {
 // ─── STOCK ────────────────────────────────────────────────────
 
 async function getProductAllStocks(productId) {
-  const data   = await prestaFetch(`/stock_availables?filter[id_product]=${productId}&display=full`);
+  const data   = await prestaFetch(`/stock_availables?filter[id_product]=${productId}&filter[id_shop]=1&display=full`);
   const stocks = data.stock_availables?.stock_available || [];
   const liste  = Array.isArray(stocks) ? stocks : [stocks];
 

@@ -34,8 +34,8 @@ import ResetDataPage  from './backoffice/pages/ResetDataPage';
 // ── Backoffice : imports CSV ──────────────────────────────────
 // Chaque CSV a sa propre page dédiée dans src/backoffice/import/ui/
 import ImportProductsPage from './backoffice/import/ui/ImportProductsPage';
-// import ImportCombinationsPage from './backoffice/import/ui/ImportCombinationsPage'; // CSV 2 — à venir
-// import ImportOrdersPage       from './backoffice/import/ui/ImportOrdersPage';       // CSV 3 — à venir
+import ImportCombinationsPage from './backoffice/import/ui/ImportCombinationsPage'; // CSV 2 — à venir
+import ImportOrdersPage       from './backoffice/import/ui/ImportOrdersPage';       // CSV 3 — à venir
 // import ImportImagesPage        from './backoffice/import/ui/ImportImagesPage';       // ZIP   — à venir
 
 // ── Frontoffice : pages ───────────────────────────────────────
@@ -89,8 +89,8 @@ function App() {
           />
           <Route path="import/produits"     element={<ImportProductsPage />} />
           
-          {/* <Route path="import/combinaisons" element={<ImportCombinationsPage />} /> */}
-          {/* <Route path="import/commandes"    element={<ImportOrdersPage />} /> */}
+          <Route path="import/combinaisons" element={<ImportCombinationsPage />} />
+          <Route path="import/commandes"    element={<ImportOrdersPage />} />
           {/* <Route path="import/images"       element={<ImportImagesPage />} /> */}
 
           {/* Fallback backoffice */}

@@ -6,12 +6,17 @@
  * STRATEGIE :
  *   - Lecture stock    : GET /api/stock_availables (API PS)
  *   - Ecriture stock   : POST /updatestock (fichier standalone PS)
- *   - Historique       : GET /updatestock?action=history (depuis ps_stock_mvt)
+ *   - Historique       : GET /updatestock?action=history (depuis ps_stock_mvt_backoffice)
  *
  * REGLES :
  *   - Seul le mode delta est supporte (pas de valeur absolue)
  *   - Si aucune ligne stock n'existe → erreur bloquante
  *   - Pas de sessionStorage ni de snapshot
+ *
+ * CORRECTIFS :
+ *   - normalizeAttrId() : '' et null/undefined → '0' de façon cohérente
+ *   - findStockItem()   : utilise normalizeAttrId des deux côtés
+ *   - getStockHistory() : idem, id_product_attribute toujours un entier
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -23,6 +28,16 @@ const STOCK_ENDPOINT = '/updatestock';
 
 function getAuthHeader() {
   return 'Basic ' + btoa(`${API_KEY}:`);
+}
+
+// ─── Helper : normalisation id_product_attribute ─────────────
+/**
+ * Toute valeur absente / vide / '0' / 0 → '0'.
+ * Évite les bugs de comparaison '' vs '0' vs 0.
+ */
+function normalizeAttrId(combiId) {
+  const n = parseInt(combiId, 10);
+  return isNaN(n) || n === 0 ? '0' : String(n);
 }
 
 // ─── Helpers XML (lecture) ────────────────────────────────────
@@ -113,13 +128,14 @@ export async function getCombinaisonsForStock(productId) {
 
 export async function getStocksForProduct(productId) {
   const xml    = await prestaGet(
-    `/stock_availables?filter[id_product]=${productId}&display=full`
+    `/stock_availables?filter[id_product]=${productId}&filter[id_shop]=1&display=full`
   );
   const stocks = parseStockAvailables(xml);
 
+  // Dédupliquer : on préfère toujours la ligne id_shop=1
   const map = new Map();
   for (const s of stocks) {
-    const key      = String(s.id_product_attribute);
+    const key      = normalizeAttrId(s.id_product_attribute);
     const existing = map.get(key);
     if (!existing) {
       map.set(key, s);
@@ -131,16 +147,21 @@ export async function getStocksForProduct(productId) {
   return [...map.values()];
 }
 
+/**
+ * Trouve la ligne de stock correspondant à une combinaison.
+ * combiId vide / null / 0 → cherche la ligne "produit de base" (id_product_attribute=0).
+ */
 export function findStockItem(stocks, combiId) {
-  const attrId = combiId || '0';
-  return stocks.find((s) => String(s.id_product_attribute) === String(attrId)) || null;
+  const target = normalizeAttrId(combiId);
+  return (
+    stocks.find((s) => normalizeAttrId(s.id_product_attribute) === target) || null
+  );
 }
 
 // ─── MISE À JOUR STOCK (delta uniquement) ────────────────────
 
 /**
  * Applique un delta de stock via l'endpoint custom PS.
- * Insere automatiquement un mouvement dans ps_stock_mvt.
  *
  * @param {Object|null} stockItem  - ligne stock lue en amont (null = bloquant)
  * @param {string}      productId
@@ -156,7 +177,7 @@ export async function applyStockDelta(stockItem, productId, combiId, delta) {
   if (!stockItem) {
     throw new Error(
       'Aucune ligne de stock existante pour ce produit/combinaison. ' +
-      'Créez d\'abord un stock initial dans PrestaShop.'
+      "Créez d'abord un stock initial dans PrestaShop."
     );
   }
 
@@ -167,12 +188,14 @@ export async function applyStockDelta(stockItem, productId, combiId, delta) {
     );
   }
 
+  const attrId = parseInt(normalizeAttrId(combiId), 10); // toujours un entier (0 si simple)
+
   const res = await fetch(STOCK_ENDPOINT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
       id_product:           Number(productId),
-      id_product_attribute: Number(combiId) || 0,
+      id_product_attribute: attrId,
       delta,
     }),
   });
@@ -192,19 +215,21 @@ export async function applyStockDelta(stockItem, productId, combiId, delta) {
   };
 }
 
-// ─── HISTORIQUE depuis ps_stock_mvt ──────────────────────────
+// ─── HISTORIQUE depuis ps_stock_mvt_backoffice ───────────────
 
 /**
- * Recupere les mouvements de stock depuis ps_stock_mvt via l'endpoint PS.
+ * Récupère les mouvements depuis la table custom ps_stock_mvt_backoffice.
  *
  * @param {string|number} productId
- * @param {string|number} combiId    - 0 ou '' si produit simple
- * @param {number}        limit      - max 50
- * @returns {Promise<{ current_qty: number, movements: Array }>}
+ * @param {string|number} combiId    - '' / null / 0 → produit simple (attr=0)
+ * @param {number}        limit      - max 100
+ * @returns {Promise<{ current_qty: number, movements: Array, total: number }>}
  */
-export async function getStockHistory(productId, combiId = 0, limit = 50) {
-  const attrId = Number(combiId) || 0;
-  const url    = `${STOCK_ENDPOINT}?action=history&id_product=${productId}&id_product_attribute=${attrId}&limit=${limit}`;
+export async function getStockHistory(productId, combiId, limit = 50) {
+  // Normaliser : '' → 0, '5' → 5
+  const attrId = parseInt(normalizeAttrId(combiId), 10);
+
+  const url = `${STOCK_ENDPOINT}?action=history&id_product=${productId}&id_product_attribute=${attrId}&limit=${limit}`;
 
   const res = await fetch(url);
 

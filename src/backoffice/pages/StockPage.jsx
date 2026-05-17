@@ -3,15 +3,14 @@
  * ─────────────────────────────────────────────────────────────
  * Page de gestion du stock — Backoffice PrestaShop
  *
- * FONCTIONNALITES :
- *   1. Ajout/retrait de stock par delta
- *      - Bloque si aucune ligne stock n'existe
- *      - Bloque si le stock deviendrait negatif
- *
- *   2. Graphique d'evolution + tableau des mouvements
- *      - Donnees lues depuis ps_stock_mvt (via GET /updatestock?action=history)
- *      - Pas de sessionStorage ni de snapshot
- *      - Rechargement automatique apres chaque modification
+ * CORRECTIFS :
+ *   - Après chargement des stocks, on cherche la ligne avec
+ *     id_product_attribute = '0' pour un produit simple
+ *     (avant : on prenait la première combi non-nulle → quantité = 0)
+ *   - selectedCombi = '' représente "produit de base" (attr=0).
+ *     findStockItem et getStockHistory utilisent normalizeAttrId
+ *     dans le service, donc '' et 0 sont équivalents côté API.
+ *   - Pas de changement d'UI, uniquement la logique de sélection.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -29,28 +28,23 @@ import './StockPage.css';
 // ─── Graphique SVG ────────────────────────────────────────────
 
 function StockChart({ movements, currentQty }) {
-  // Construire les points depuis les mouvements (du plus ancien au plus recent)
-  // On reconstitue le stock dans le temps en partant du stock actuel
   const points = (() => {
     if (!movements || movements.length === 0) return [];
 
-    // Les mouvements arrivent du plus recent au plus ancien (ORDER BY date_add DESC)
-    // On les inverse pour reconstituer la chronologie
+    // Les mouvements arrivent du plus récent au plus ancien
     const chrono = [...movements].reverse();
 
-    // Partir du stock actuel et remonter dans le temps
     let qty = currentQty;
     const pts = [{ label: 'Actuel', qty, date: 'maintenant' }];
 
     for (const mvt of chrono) {
-      // Annuler le mouvement pour revenir en arriere
       qty -= mvt.quantity;
-      const date = new Date(mvt.date);
+      const date  = new Date(mvt.date);
       const label = `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
       pts.push({ label, qty: Math.max(0, qty), date: mvt.date });
     }
 
-    return pts.reverse(); // du plus ancien au plus recent
+    return pts.reverse();
   })();
 
   if (points.length < 2) {
@@ -145,20 +139,20 @@ export default function StockPage() {
   const [currentStock,  setCurrentStock]  = useState(null);
   const [deltaQty,      setDeltaQty]      = useState('');
 
-  const [loadingProds,  setLoadingProds]  = useState(true);
-  const [loadingCombi,  setLoadingCombi]  = useState(false);
-  const [saving,        setSaving]        = useState(false);
+  const [loadingProds, setLoadingProds] = useState(true);
+  const [loadingCombi, setLoadingCombi] = useState(false);
+  const [saving,       setSaving]       = useState(false);
 
   // ── Graphique / Historique ───────────────────────────────────
-  const [chartProd,     setChartProd]     = useState('');
-  const [chartCombi,    setChartCombi]    = useState('');
-  const [chartCombis,   setChartCombis]   = useState([]);
-  const [historyData,   setHistoryData]   = useState(null);  // { current_qty, movements }
-  const [loadingHist,   setLoadingHist]   = useState(false);
+  const [chartProd,   setChartProd]   = useState('');
+  const [chartCombi,  setChartCombi]  = useState('');
+  const [chartCombis, setChartCombis] = useState([]);
+  const [historyData, setHistoryData] = useState(null);
+  const [loadingHist, setLoadingHist] = useState(false);
 
   // ── Toast ────────────────────────────────────────────────────
-  const [toast,     setToast]     = useState(null);
-  const toastTimer                = useRef(null);
+  const [toast,    setToast]    = useState(null);
+  const toastTimer              = useRef(null);
 
   function showToast(msg, type = 'succes') {
     setToast({ msg, type });
@@ -192,7 +186,13 @@ export default function StockPage() {
       .then(([combis, stks]) => {
         setCombinations(combis);
         setStocks(stks);
-        setCurrentStock(findStockItem(stks, '0'));
+
+        // CORRECTIF : pour un produit simple, la ligne stock a
+        // id_product_attribute = '0'. On cherche CETTE ligne en premier.
+        // findStockItem('', stks) → normalizeAttrId('') = '0' → correct.
+        const defaultStock = findStockItem(stks, '');   // '' = produit de base (attr=0)
+        setCurrentStock(defaultStock);
+        setSelectedCombi(''); // reset à "produit de base"
       })
       .catch((err) => showToast(`Chargement : ${err.message}`, 'erreur'))
       .finally(() => setLoadingCombi(false));
@@ -201,6 +201,7 @@ export default function StockPage() {
   // ── Combinaison formulaire change ────────────────────────────
   useEffect(() => {
     if (!selectedProd) return;
+    // findStockItem gère '' et '0' de façon équivalente via normalizeAttrId
     setCurrentStock(findStockItem(stocks, selectedCombi));
   }, [selectedCombi, stocks]);
 
@@ -209,6 +210,7 @@ export default function StockPage() {
     if (!chartProd) return;
     setLoadingHist(true);
     try {
+      // chartCombi vide → '0' côté service (normalizeAttrId)
       const data = await getStockHistory(chartProd, chartCombi, 50);
       setHistoryData(data);
     } catch (err) {
@@ -247,13 +249,18 @@ export default function StockPage() {
     try {
       const result = await applyStockDelta(currentStock, selectedProd, selectedCombi, delta);
 
-      // Rafraichir le stock affiche
+      // Rafraîchir le stock affiché
       const stksRefresh = await getStocksForProduct(selectedProd);
       setStocks(stksRefresh);
       setCurrentStock(findStockItem(stksRefresh, selectedCombi));
 
-      // Rafraichir l'historique si meme produit/combi observe
-      if (chartProd === selectedProd && chartCombi === selectedCombi) {
+      // Rafraîchir l'historique si même produit/combi observé
+      // Comparer avec normalizeAttrId pour éviter les faux négatifs '' vs '0'
+      const sameAttr =
+        (chartCombi || '0') === (selectedCombi || '0') ||
+        parseInt(chartCombi || '0') === parseInt(selectedCombi || '0');
+
+      if (chartProd === selectedProd && sameAttr) {
         await chargerHistorique();
       }
 
@@ -446,7 +453,7 @@ export default function StockPage() {
             </select>
           </div>
 
-          {/* Stock actuel observe */}
+          {/* Stock actuel observé */}
           {historyData && (
             <div className="chart-meta">
               <span className="chart-meta__qty">{historyData.current_qty}</span>
