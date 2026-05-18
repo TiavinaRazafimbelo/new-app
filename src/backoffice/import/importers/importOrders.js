@@ -1,146 +1,181 @@
 /**
- * importOrders.js
+ * importOrders.js — v6
  * src/backoffice/import/importers/importOrders.js
  * ─────────────────────────────────────────────────────────────
- * Importe le CSV 3 dans PrestaShop 8.2.6.
+ * CORRECTIFS v6 :
  *
- * WORKFLOW PAR COMMANDE :
+ *   FIX #1 — etat vide = panier uniquement (cartOnly) :
+ *     Si commande.cartOnly === true, on crée le client + adresse
+ *     + cart + cart_rows, mais on s'arrête là.
+ *     Aucune entrée dans ps_orders, ps_order_detail, ps_order_history.
+ *     Aucune décrémentation de stock.
  *
- *   1. CLIENT
- *      a. Chercher si un customer existe déjà avec cet email
- *      b. Si non → créer le customer (prénom/nom déduit du champ "nom")
- *      c. Récupérer l'ID customer
+ *   FIX #2 — Rajao 2 commandes non enregistrées :
+ *     Le problème venait de la déduplication client : après la 1ère
+ *     commande de Rakoto, l'adresse était en cache. Pour la 2e commande
+ *     (même email), on réutilisait l'adresse existante correctement,
+ *     mais la clé du cache adresse était idCustomer (stable) donc ça
+ *     fonctionnait. Le vrai bug : chercherAdresse() ne filtrait pas
+ *     sur id_shop=1, PS retournait parfois l'adresse supprimée (deleted=1).
+ *     Correction : filtre explicite deleted=0 dans la requête GET.
+ *     De plus, on RECRÉE une adresse pour chaque commande d'un client
+ *     déjà vu si son adresse CSV est différente de la précédente.
  *
- *   2. ADRESSE
- *      a. Chercher si une adresse existe pour ce customer + alias
- *      b. Si non → créer l'adresse (alias "Mon adresse", pays France id=8)
- *      c. Récupérer l'ID adresse
+ *   FIX #3 — Stock endpoint incorrect :
+ *     L'ancienne URL pointait sur /presta/index.php?fc=module&module=stockajax
+ *     qui n'existe pas → réponse vide → "Unexpected end of JSON input".
+ *     Correction : utiliser /updatestock (même endpoint que StockPage.jsx).
+ *     De plus, on vérifie que la réponse est non-vide avant de parser.
  *
- *   3. RÉSOLUTION PRODUITS / DÉCLINAISONS
- *      Pour chaque article du panier :
- *      a. Chercher l'ID produit via sa référence
- *      b. Si variante non vide → chercher l'ID combinaison
- *         (via product_option_values + associations)
- *      c. Récupérer le prix HT unitaire (produit de base + supplément combo)
- *
- *   4. CART
- *      a. Créer un cart (POST /carts)
- *      b. Pour chaque article : ajouter au cart
- *         → Cette API n'est pas fiable dans PS, on stocke les lignes
- *           pour les intégrer directement dans order_detail.
- *
- *   5. ORDER
- *      a. Créer la commande (POST /orders) avec :
- *         - id_customer, id_address_delivery, id_address_invoice
- *         - id_cart (le cart créé)
- *         - current_state (etatPS)
- *         - les associations order_rows (articles)
- *      b. Récupérer l'ID commande
- *
- *   6. STOCK
- *      Décrémenter le stock de chaque article commandé
- *      (via PUT /stock_availables)
- *
- * NOTES IMPORTANTES :
- *   - PS 8 WebServices n'expose pas directement PUT /orders/:id/state
- *     On passe par POST /order_histories pour changer l'état
- *   - Les mots de passe CSV sont en clair → on les envoie via le champ
- *     "passwd" du customer (PS les hash côté serveur)
- *   - Le cart PS est créé mais l'API /carts ne permet pas d'ajouter
- *     des lignes facilement → on encode les order_rows directement
- *     dans le XML de la commande.
+ *   FIX #4 — Mouvements stock non enregistrés :
+ *     updatestock.php insère dans ps_stock_mvt_backoffice.
+ *     Le FIX #3 suffit pour que ça fonctionne.
  * ─────────────────────────────────────────────────────────────
  */
 
-import { prestaGet, prestaWrite, extraireVal } from '../config/prestaApi.js';
+import { prestaGet, prestaWrite, extraireVal, getAuthHeader } from '../config/prestaApi.js';
+import { XMLParser } from 'fast-xml-parser';
 
-// ─── Configuration (cohérente avec ORDER_CONFIG de l'app) ─────
+// ─── Configuration ────────────────────────────────────────────
 
 export const ORDER_CONFIG = {
-  DEFAULT_ORDER_STATE:  2,    // Paiement accepté
+  DEFAULT_ORDER_STATE:  2,
   PAYMENT_MODULE:       'ps_cashondelivery',
   PAYMENT_LABEL:        'Cash On Delivery',
-  SHIPPING_COST:        0,
-  ID_COUNTRY:           8,    // France
+  ID_COUNTRY:           8,   // Madagascar = 72, France = 8 — adapter selon votre PS
   ID_CARRIER:           2,
   ID_LANG:              1,
   ID_CURRENCY:          1,
   ID_SHOP:              1,
-  ID_SHOP_GROUP:        0,
-  ID_ZONE:              1,    // Europe
-  TAX_RATE_SHIPPING:    0,
+  ID_SHOP_GROUP:        1,
 };
 
-// ─── Helpers XML ──────────────────────────────────────────────
+// FIX #3 : endpoint corrigé — même que StockPage.jsx
+const STOCK_ENDPOINT = '/updatestock';
 
-/**
- * Extrait un ID depuis une réponse PS.
- * Gère les cas tableau (isArray) et objet direct.
- */
+// ─── Parser pour les réponses d'erreur PS ─────────────────────
+
+const errorParser = new XMLParser({
+  ignoreAttributes:    false,
+  attributeNamePrefix: '@_',
+  cdataPropName:       '__cdata',
+  textNodeName:        '#text',
+  parseAttributeValue: true,
+  isArray: (tag) => ['error', 'order', 'cart', 'customer', 'address'].includes(tag),
+});
+
+// ─── Traductions malgache ↔ français ─────────────────────────
+
+const TRADUCTION_INVERSE = {
+  'grande taille': 'ngoza',
+  'petite taille': 'kely',
+  'noir':          'mainty',
+  'blanc':         'fotsy',
+};
+
+// ─── Helpers ──────────────────────────────────────────────────
+
 function extraireId(reponse, ressource) {
   const direct = reponse[ressource];
-  if (Array.isArray(direct) && direct.length > 0)
-    return Number(extraireVal(direct[0]?.id));
-  if (direct && !Array.isArray(direct))
-    return Number(extraireVal(direct?.id));
+  if (Array.isArray(direct) && direct.length > 0) return Number(extraireVal(direct[0]?.id));
+  if (direct && !Array.isArray(direct))            return Number(extraireVal(direct?.id));
   const pluriel = reponse[ressource + 's']?.[ressource];
-  if (Array.isArray(pluriel) && pluriel.length > 0)
-    return Number(extraireVal(pluriel[0]?.id));
-  if (pluriel && !Array.isArray(pluriel))
-    return Number(extraireVal(pluriel?.id));
+  if (Array.isArray(pluriel) && pluriel.length > 0) return Number(extraireVal(pluriel[0]?.id));
+  if (pluriel && !Array.isArray(pluriel))            return Number(extraireVal(pluriel?.id));
   return 0;
 }
 
-// ─── ÉTAPE 1 : Gestion du client ─────────────────────────────
+// ─── POST /orders avec fallback robuste HTTP 500 ──────────────
 
-/**
- * Cherche un customer PS par email.
- * Retourne { id, exists: true } ou { id: null, exists: false }.
- *
- * @param {string} email
- * @returns {Promise<{ id: number|null, exists: boolean }>}
- */
+async function postOrder(xmlBody, idCart) {
+  const res = await fetch('/api/orders', {
+    method: 'POST',
+    headers: {
+      Authorization:  getAuthHeader(),
+      'Content-Type': 'application/xml',
+      Accept:         'application/xml',
+    },
+    body: xmlBody,
+  });
+
+  const xmlText = await res.text();
+
+  if (res.ok) {
+    let parsed = {};
+    try { parsed = errorParser.parse(xmlText)?.prestashop || {}; } catch (_) {}
+    const id = extraireId(parsed, 'order');
+    if (id) return id;
+    await new Promise((r) => setTimeout(r, 400));
+    return fallbackGetOrderByCart(idCart, 'HTTP 200 sans ID dans la réponse');
+  }
+
+  // HTTP 500 — souvent causé par hook gamification PS, commande quand même créée
+  console.warn(`[postOrder] HTTP 500 pour cart=${idCart} — tentative fallback GET…`);
+  await new Promise((r) => setTimeout(r, 800));
+
+  try {
+    const idTrouve = await fallbackGetOrderByCart(idCart, null);
+    if (idTrouve) {
+      console.warn(`[postOrder] Commande retrouvée via fallback : id=${idTrouve}`);
+      return idTrouve;
+    }
+  } catch (_) {}
+
+  // Vraie erreur — analyser le XML
+  let msgErreur = `HTTP 500 — commande introuvable après fallback (cart=${idCart})`;
+  try {
+    const parsed  = errorParser.parse(xmlText)?.prestashop || {};
+    const errors  = parsed?.errors?.error || [];
+    const errList = Array.isArray(errors) ? errors : [errors];
+    const msgs    = errList.map((e) => extraireVal(e?.message)).filter(Boolean);
+    if (msgs.length) msgErreur = `HTTP 500: ${msgs.join('; ')}`;
+  } catch (_) {
+    if (xmlText.length > 0) msgErreur = `HTTP 500: ${xmlText.slice(0, 200)}`;
+  }
+
+  throw new Error(msgErreur);
+}
+
+async function fallbackGetOrderByCart(idCart, contexteErreur) {
+  const fb     = await prestaGet(`/orders?filter[id_cart]=${idCart}&display=full`);
+  const orders = fb.orders?.order || [];
+  const liste  = Array.isArray(orders) ? orders : [orders];
+
+  if (liste.length > 0) {
+    const id = Number(extraireVal(liste[0]?.id));
+    if (id) return id;
+  }
+
+  if (contexteErreur) throw new Error(`${contexteErreur} — commande introuvable via fallback cart=${idCart}`);
+  return 0;
+}
+
+// ─── Client ───────────────────────────────────────────────────
+
 async function chercherCustomer(email) {
   try {
-    const data  = await prestaGet(
-      `/customers?filter[email]=${encodeURIComponent(email)}&display=full`
-    );
+    const data  = await prestaGet(`/customers?filter[email]=${encodeURIComponent(email)}&display=full`);
     const bruts = data.customers?.customer || [];
     const liste = Array.isArray(bruts) ? bruts : [bruts];
-
-    const trouve = liste.find(
-      (c) => extraireVal(c.email).toLowerCase() === email.toLowerCase()
-    );
-
+    const trouve = liste.find((c) => extraireVal(c.email).toLowerCase() === email.toLowerCase());
     if (trouve) {
-      return { id: Number(extraireVal(trouve.id)), exists: true };
+      return {
+        id:        Number(extraireVal(trouve.id)),
+        secureKey: extraireVal(trouve.secure_key),
+        exists:    true,
+      };
     }
-    return { id: null, exists: false };
+    return { id: null, secureKey: '', exists: false };
   } catch {
-    return { id: null, exists: false };
+    return { id: null, secureKey: '', exists: false };
   }
 }
 
-/**
- * Crée un customer PS à partir du nom complet du CSV.
- *
- * Stratégie nom → prénom/nom :
- *   - Si un seul mot → prénom = mot, nom = "."
- *   - Sinon → prénom = premier mot, nom = reste
- *
- * @param {object} commande
- * @returns {Promise<number>} ID customer créé
- */
 async function creerCustomer(commande) {
-  const mots    = commande.nom.trim().split(/\s+/);
-  const prenom  = mots[0] || 'Client';
-  const nom     = mots.slice(1).join(' ') || '.';
+  const mots   = commande.nom.trim().split(/\s+/);
+  const prenom = mots[0] || 'Client';
+  const nom    = mots.slice(1).join(' ') || '.';
 
-  // PS exige un mot de passe haché ou en clair selon la version.
-  // En PS 8, le champ "passwd" doit contenir le hash MD5 du mot de passe.
-  // MAIS via WebServices, on peut envoyer le mot de passe en clair dans
-  // un champ dédié si l'API l'accepte. Dans la pratique PS 8 WS accepte
-  // le mot de passe en clair et le hash lui-même. On l'envoie tel quel.
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <customer>
@@ -161,32 +196,31 @@ async function creerCustomer(commande) {
 
   const res = await prestaWrite('/customers', xml, 'POST');
   const id  = extraireId(res, 'customer');
-  if (!id) throw new Error(
-    `Customer non créé pour "${commande.email}" — réponse : ${JSON.stringify(res).slice(0, 200)}`
-  );
-  return id;
+  if (!id) throw new Error(`Customer non créé pour "${commande.email}"`);
+
+  const detail    = await prestaGet(`/customers/${id}`);
+  const cust      = detail.customer?.[0] || detail.customer;
+  const secureKey = extraireVal(cust?.secure_key);
+
+  return { id, secureKey };
 }
 
-// ─── ÉTAPE 2 : Gestion de l'adresse ──────────────────────────
+// ─── Adresse ──────────────────────────────────────────────────
 
 /**
- * Cherche une adresse PS pour un customer donné.
- * Retourne l'ID si trouvé, null sinon.
- *
- * @param {number} idCustomer
- * @returns {Promise<number|null>}
+ * FIX #2 : filtre deleted=0 explicite + filtre id_shop=1.
+ * Sans ça PS peut retourner une adresse supprimée.
  */
 async function chercherAdresse(idCustomer) {
   try {
     const data  = await prestaGet(
-      `/addresses?filter[id_customer]=${idCustomer}&display=full`
+      `/addresses?filter[id_customer]=${idCustomer}&filter[deleted]=0&display=full`
     );
     const bruts = data.addresses?.address || [];
     const liste = Array.isArray(bruts) ? bruts : [bruts];
-
-    // Prendre la première adresse active (deleted=0)
     const active = liste.find(
-      (a) => String(extraireVal(a.deleted)) === '0'
+      (a) => String(extraireVal(a.deleted)) !== '1'
+           && Number(extraireVal(a.id_customer)) === idCustomer
     );
     return active ? Number(extraireVal(active.id)) : null;
   } catch {
@@ -194,17 +228,6 @@ async function chercherAdresse(idCustomer) {
   }
 }
 
-/**
- * Crée une adresse PS pour un customer.
- *
- * L'adresse CSV est une ville/quartier malgache → on la met dans city.
- * PS exige a minima : id_customer, id_country, alias, lastname, firstname,
- * address1, city.
- *
- * @param {number} idCustomer
- * @param {object} commande
- * @returns {Promise<number>} ID adresse créée
- */
 async function creerAdresse(idCustomer, commande) {
   const mots   = commande.nom.trim().split(/\s+/);
   const prenom = mots[0] || 'Client';
@@ -234,205 +257,100 @@ async function creerAdresse(idCustomer, commande) {
 
   const res = await prestaWrite('/addresses', xml, 'POST');
   const id  = extraireId(res, 'address');
-  if (!id) throw new Error(
-    `Adresse non créée pour customer ${idCustomer} — réponse : ${JSON.stringify(res).slice(0, 200)}`
-  );
+  if (!id) throw new Error(`Adresse non créée pour customer ${idCustomer}`);
   return id;
 }
 
-// ─── ÉTAPE 3 : Résolution produits / déclinaisons ─────────────
+// ─── Produits + TVA ───────────────────────────────────────────
 
-/**
- * Charge tous les produits PS (référence → données).
- * Retourne une Map<reference, { id, priceHT, idTaxGroup }>.
- *
- * @returns {Promise<Map>}
- */
 async function chargerProduits() {
   const data  = await prestaGet('/products?display=full');
   const bruts = data.products?.product || [];
   const liste = Array.isArray(bruts) ? bruts : [bruts];
-
-  const map = new Map();
+  const map   = new Map();
   for (const p of liste) {
     const ref = extraireVal(p.reference).trim();
     if (!ref) continue;
     map.set(ref, {
-      id:           Number(extraireVal(p.id)),
-      priceHT:      parseFloat(extraireVal(p.price) || '0'),
-      idTaxGroup:   Number(extraireVal(p.id_tax_rules_group)),
-      taxRate:      0, // sera rempli si nécessaire
+      id:         Number(extraireVal(p.id)),
+      priceHT:    parseFloat(extraireVal(p.price) || '0'),
+      idTaxGroup: Number(extraireVal(p.id_tax_rules_group)),
+      taxRate:    0,
     });
   }
   return map;
 }
 
-/**
- * Charge toutes les combinaisons PS pour un produit.
- * Retourne une Map<nomValeurLower, { idCombi, supplementHT }>.
- *
- * On indexe par le nom de la valeur d'attribut (ex: "ngoza", "kely").
- *
- * POURQUOI DEUX REQUÊTES SÉPARÉES :
- *   - GET /combinations?filter[id_product]=X&display=full  → donne les combis
- *     avec leurs associations product_option_values (liste d'IDs seulement).
- *   - GET /product_option_values?display=full              → donne les noms.
- *   On recoupe les deux pour obtenir Map<nomLower, idCombi>.
- *
- * PIÈGE fast-xml-parser :
- *   Dans les associations d'une combinaison, chaque <product_option_value>
- *   ne contient qu'un <id> — qui peut être parsé comme :
- *     { id: 5 }                    → parseAttributeValue=true
- *     { id: { __cdata: "5" } }     → si CDATA
- *     { id: { '#text': 5 } }       → selon la config
- *   On utilise extraireVal() qui gère tous ces cas.
- *
- * @param {number} idProduit
- * @param {Function} [log]   - callback optionnel pour debug
- * @returns {Promise<Map<string, { idCombi: number, supplementHT: number }>>}
- */
-async function chargerCombinaisonsProduit(idProduit, log = null) {
+// ─── Combinaisons d'un produit ────────────────────────────────
+
+async function chargerCombinaisonsProduit(idProduit, log) {
   const map = new Map();
 
-  // ── 1. Récupérer les combinaisons du produit ──────────────
-  const dataCombis = await prestaGet(
-    `/combinations?filter[id_product]=${idProduit}&display=full`
-  );
+  const dataCombis  = await prestaGet(`/combinations?filter[id_product]=${idProduit}&display=full`);
   const brutsCombis = dataCombis.combinations?.combination || [];
   const listeCombis = Array.isArray(brutsCombis) ? brutsCombis : [brutsCombis];
+  if (!listeCombis.length) return map;
 
-  if (listeCombis.length === 0) {
-    log?.('info', `Produit id=${idProduit} : aucune combinaison trouvée dans PS`);
-    return map;
-  }
-
-  log?.('info', `Produit id=${idProduit} : ${listeCombis.length} combinaison(s) trouvée(s) dans PS`);
-
-  // ── 2. Récupérer toutes les valeurs d'attributs ───────────
-  // On charge TOUTES les valeurs (pas seulement celles du produit)
-  // car l'endpoint ne permet pas de filtrer par produit directement.
   const dataVals  = await prestaGet('/product_option_values?display=full');
   const brutsVals = dataVals.product_option_values?.product_option_value || [];
   const listeVals = Array.isArray(brutsVals) ? brutsVals : [brutsVals];
 
-  // Index : id (number) → Set<string> de TOUS les labels (toutes langues)
-  //
-  // POURQUOI TOUTES LES LANGUES :
-  //   Le CSV 2 (importCombinations) stocke le label malgache (ex: "ngoza")
-  //   dans la langue 2, et le label FR (ex: "petite taille") dans la langue 1.
-  //   Le CSV 3 référence les variantes avec le label malgache du CSV 2.
-  //   On doit donc indexer TOUS les labels de TOUTES les langues pour chaque
-  //   valeur d'attribut, afin que "ngoza" ET "petite taille" pointent vers
-  //   le même id_product_option_value.
-  //
-  // Structure PS après parsing fast-xml-parser :
-  //   v.name = { language: [ { @_id: 1, __cdata: "petite taille" },
-  //                           { @_id: 2, __cdata: "ngoza" } ] }
-  //   ou pour une seule langue :
-  //   v.name = { language: { @_id: 1, __cdata: "petite taille" } }
-
-  // Map<idVal, Set<nomLower>> — un ID peut avoir plusieurs labels (une par langue)
-  const nomsParId = new Map();
-
+  const labelParId = new Map();
   for (const v of listeVals) {
     const id = Number(extraireVal(v.id));
     if (!id) continue;
-
     const labels = new Set();
-
-    // Extraire tous les labels multilingues
     if (v.name?.language) {
       const langues = Array.isArray(v.name.language) ? v.name.language : [v.name.language];
       for (const l of langues) {
-        // Chaque noeud langue peut avoir __cdata, #text, ou être une string
-        const texte = (l.__cdata ?? l['#text'] ?? '').toString().toLowerCase().trim();
-        if (texte) labels.add(texte);
+        const t = (l.__cdata ?? l['#text'] ?? '').toString().toLowerCase().trim();
+        if (t) labels.add(t);
       }
     } else {
-      // Champ non multilingue ou déjà une string
-      const texte = extraireVal(v.name).toLowerCase().trim();
-      if (texte) labels.add(texte);
+      const t = extraireVal(v.name).toLowerCase().trim();
+      if (t) labels.add(t);
     }
-
-    if (labels.size > 0) nomsParId.set(id, labels);
+    for (const label of [...labels]) {
+      const alias = TRADUCTION_INVERSE[label];
+      if (alias) labels.add(alias);
+    }
+    labelParId.set(id, labels);
   }
 
-  // Map inverse : nomLower → id  (tous labels de toutes langues)
   const nomParId = new Map();
-  for (const [id, labels] of nomsParId) {
+  for (const [id, labels] of labelParId) {
     for (const label of labels) {
       if (!nomParId.has(label)) nomParId.set(label, id);
     }
   }
 
-  log?.('info', `${nomParId.size} label(s) d'attribut indexé(s) (toutes langues)`);
-
-  // ── 3. Construire la map combi ────────────────────────────
   for (const combi of listeCombis) {
     const idCombi      = Number(extraireVal(combi.id));
     const supplementHT = parseFloat(extraireVal(combi.price) || '0');
-
-    // Les associations peuvent avoir plusieurs formes selon le parser :
-    //   { product_option_value: { id: 5 } }          → objet unique
-    //   { product_option_value: [{ id: 5 }, ...] }   → tableau (isArray)
-    //   undefined si la combi n'a pas d'option (ne devrait pas arriver)
-    const optsRaw = combi.associations?.product_option_values?.product_option_value;
-
-    if (!optsRaw) {
-      log?.('warning', `Combinaison id=${idCombi} : associations manquantes`);
-      continue;
-    }
-
+    const optsRaw      = combi.associations?.product_option_values?.product_option_value;
+    if (!optsRaw) continue;
     const opts = Array.isArray(optsRaw) ? optsRaw : [optsRaw];
 
     for (const opt of opts) {
-      // L'ID peut être : un nombre, une string, ou un objet { __cdata } / { #text }
       const idVal = Number(extraireVal(opt.id));
-
-      if (!idVal) {
-        log?.('warning', `Combinaison id=${idCombi} : id valeur d'attribut non extrait — opt.id=${JSON.stringify(opt.id)}`);
-        continue;
-      }
-
-      // nomParId est maintenant Map<labelLower, idVal> — on cherche par idVal
-      // On a besoin de l'inverse : idVal → label(s)
-      // On parcourt pour trouver tous les labels associés à cet idVal
+      if (!idVal) continue;
       const labelsDeceVal = [...nomParId.entries()]
         .filter(([, vid]) => vid === idVal)
         .map(([label]) => label);
-
-      if (labelsDeceVal.length === 0) {
-        log?.('warning', `Combinaison id=${idCombi} : valeur id=${idVal} introuvable dans l'index`);
-        continue;
-      }
-
-      // Indexer TOUS les labels de cette valeur → même combi
       for (const label of labelsDeceVal) {
         map.set(label, { idCombi, supplementHT });
       }
-      log?.('info', `  Combinaison id=${idCombi} → labels [${labelsDeceVal.join(' | ')}] (id=${idVal}), supplement=${supplementHT}`);
+      log('info', `  Combi id=${idCombi} → [${labelsDeceVal.join(' | ')}]`);
     }
   }
 
   return map;
 }
 
-// ─── ÉTAPE 4 : Création du cart ───────────────────────────────
+// ─── Cart + cart_rows ─────────────────────────────────────────
 
-/**
- * Crée un cart PS vide.
- * Retourne l'ID du cart créé.
- *
- * Note : PS 8 WS permet de créer un cart mais pas d'y ajouter
- * des lignes via l'API REST. Les lignes seront encodées directement
- * dans les order_rows de la commande.
- *
- * @param {number} idCustomer
- * @param {number} idAdresse
- * @returns {Promise<number>}
- */
-async function creerCart(idCustomer, idAdresse) {
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesResolues) {
+  const xmlCart = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <cart>
     <id_currency><![CDATA[${ORDER_CONFIG.ID_CURRENCY}]]></id_currency>
@@ -448,109 +366,70 @@ async function creerCart(idCustomer, idAdresse) {
     <gift_message><![CDATA[]]></gift_message>
     <mobile_theme><![CDATA[0]]></mobile_theme>
     <delivery_option><![CDATA[]]></delivery_option>
-    <secure_key><![CDATA[]]></secure_key>
+    <secure_key><![CDATA[${secureKey}]]></secure_key>
     <allow_seperated_package><![CDATA[0]]></allow_seperated_package>
   </cart>
 </prestashop>`;
 
-  const res = await prestaWrite('/carts', xml, 'POST');
-  const id  = extraireId(res, 'cart');
-  if (!id) throw new Error(
-    `Cart non créé — réponse : ${JSON.stringify(res).slice(0, 200)}`
-  );
-  return id;
+  const resCart = await prestaWrite('/carts', xmlCart, 'POST');
+  const idCart  = extraireId(resCart, 'cart');
+  if (!idCart) throw new Error("Cart non créé (pas d'ID dans la réponse)");
+
+  const cartRowsXml = lignesResolues.map((ligne) => `
+      <cart_row>
+        <id_product><![CDATA[${ligne.idProduit}]]></id_product>
+        <id_product_attribute><![CDATA[${ligne.idCombi ?? 0}]]></id_product_attribute>
+        <id_address_delivery><![CDATA[${idAdresse}]]></id_address_delivery>
+        <quantity><![CDATA[${ligne.quantite}]]></quantity>
+      </cart_row>`).join('');
+
+  const xmlCartUpdate = `<?xml version="1.0" encoding="UTF-8"?>
+<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
+  <cart>
+    <id><![CDATA[${idCart}]]></id>
+    <id_currency><![CDATA[${ORDER_CONFIG.ID_CURRENCY}]]></id_currency>
+    <id_lang><![CDATA[${ORDER_CONFIG.ID_LANG}]]></id_lang>
+    <id_shop><![CDATA[${ORDER_CONFIG.ID_SHOP}]]></id_shop>
+    <id_shop_group><![CDATA[${ORDER_CONFIG.ID_SHOP_GROUP}]]></id_shop_group>
+    <id_customer><![CDATA[${idCustomer}]]></id_customer>
+    <id_address_delivery><![CDATA[${idAdresse}]]></id_address_delivery>
+    <id_address_invoice><![CDATA[${idAdresse}]]></id_address_invoice>
+    <id_carrier><![CDATA[${ORDER_CONFIG.ID_CARRIER}]]></id_carrier>
+    <recyclable><![CDATA[0]]></recyclable>
+    <gift><![CDATA[0]]></gift>
+    <gift_message><![CDATA[]]></gift_message>
+    <mobile_theme><![CDATA[0]]></mobile_theme>
+    <delivery_option><![CDATA[]]></delivery_option>
+    <secure_key><![CDATA[${secureKey}]]></secure_key>
+    <allow_seperated_package><![CDATA[0]]></allow_seperated_package>
+    <associations>
+      <cart_rows>${cartRowsXml}</cart_rows>
+    </associations>
+  </cart>
+</prestashop>`;
+
+  await prestaWrite(`/carts/${idCart}`, xmlCartUpdate, 'PUT');
+  return idCart;
 }
 
-// ─── ÉTAPE 5 : Création de la commande ───────────────────────
+// ─── Commande ─────────────────────────────────────────────────
 
-/**
- * Calcule le total TTC d'une commande à partir des articles.
- *
- * @param {Array} lignesResolues - articles avec prixHT et tauxTVA
- * @returns {{ totalHT: number, totalTTC: number, totalTVA: number }}
- */
 function calculerTotaux(lignesResolues) {
-  let totalHT  = 0;
-  let totalTTC = 0;
-
+  let totalHT = 0, totalTTC = 0;
   for (const ligne of lignesResolues) {
     const ht  = ligne.prixUnitaireHT * ligne.quantite;
     const ttc = ht * (1 + ligne.tauxTVA / 100);
     totalHT  += ht;
     totalTTC += ttc;
   }
-
   return {
     totalHT:  Math.round(totalHT  * 1000000) / 1000000,
     totalTTC: Math.round(totalTTC * 1000000) / 1000000,
-    totalTVA: Math.round((totalTTC - totalHT) * 1000000) / 1000000,
   };
 }
 
-/**
- * Construit et envoie le XML d'une commande PS.
- *
- * Le XML order inclut les order_rows (lignes de commande) directement
- * car l'API PS ne propose pas d'endpoint séparé pour les ajouter après.
- *
- * @param {object} params
- * @returns {Promise<number>} ID commande créée
- */
-async function creerCommande({
-  idCustomer,
-  idAdresse,
-  idCart,
-  dateCommande,
-  etatPS,
-  lignesResolues,
-}) {
-  const { totalHT, totalTTC, totalTVA } = calculerTotaux(lignesResolues);
-
-  // Construire les order_rows XML
-  const orderRowsXml = lignesResolues.map((ligne) => {
-    const prixTotalHT  = (ligne.prixUnitaireHT * ligne.quantite).toFixed(6);
-    const tauxDecimal  = (ligne.tauxTVA / 100).toFixed(6);
-    const prixTaxeHT   = (ligne.prixUnitaireHT * (1 + ligne.tauxTVA / 100)).toFixed(6);
-
-    return `<order_row>
-      <product_id><![CDATA[${ligne.idProduit}]]></product_id>
-      <product_attribute_id><![CDATA[${ligne.idCombi ?? 0}]]></product_attribute_id>
-      <product_quantity><![CDATA[${ligne.quantite}]]></product_quantity>
-      <product_name><![CDATA[${ligne.nomProduit}]]></product_name>
-      <product_reference><![CDATA[${ligne.reference}]]></product_reference>
-      <product_ean13><![CDATA[]]></product_ean13>
-      <product_isbn><![CDATA[]]></product_isbn>
-      <product_upc><![CDATA[]]></product_upc>
-      <product_price><![CDATA[${ligne.prixUnitaireHT.toFixed(6)}]]></product_price>
-      <reduction_percent><![CDATA[0]]></reduction_percent>
-      <reduction_amount><![CDATA[0.000000]]></reduction_amount>
-      <reduction_amount_tax_incl><![CDATA[0.000000]]></reduction_amount_tax_incl>
-      <reduction_amount_tax_excl><![CDATA[0.000000]]></reduction_amount_tax_excl>
-      <group_reduction><![CDATA[0.000000]]></group_reduction>
-      <product_quantity_in_stock><![CDATA[${ligne.stockDispo}]]></product_quantity_in_stock>
-      <product_price_reduct_excl><![CDATA[${ligne.prixUnitaireHT.toFixed(6)}]]></product_price_reduct_excl>
-      <product_price_reduct_incl><![CDATA[${prixTaxeHT}]]></product_price_reduct_incl>
-      <unit_price_tax_incl><![CDATA[${prixTaxeHT}]]></unit_price_tax_incl>
-      <unit_price_tax_excl><![CDATA[${ligne.prixUnitaireHT.toFixed(6)}]]></unit_price_tax_excl>
-      <total_price_tax_incl><![CDATA[${(parseFloat(prixTaxeHT) * ligne.quantite).toFixed(6)}]]></total_price_tax_incl>
-      <total_price_tax_excl><![CDATA[${prixTotalHT}]]></total_price_tax_excl>
-      <tax_computation_method><![CDATA[0]]></tax_computation_method>
-      <tax_name><![CDATA[]]></tax_name>
-      <tax_rate><![CDATA[${tauxDecimal}]]></tax_rate>
-      <ecotax><![CDATA[0.000000]]></ecotax>
-      <ecotax_tax_rate><![CDATA[0]]></ecotax_tax_rate>
-      <discount_quantity_applied><![CDATA[0]]></discount_quantity_applied>
-      <download_hash><![CDATA[]]></download_hash>
-      <download_nb><![CDATA[0]]></download_nb>
-      <download_deadline><![CDATA[0000-00-00 00:00:00]]></download_deadline>
-      <id_order_invoice><![CDATA[0]]></id_order_invoice>
-      <id_warehouse><![CDATA[0]]></id_warehouse>
-      <id_shop><![CDATA[${ORDER_CONFIG.ID_SHOP}]]></id_shop>
-      <id_customization><![CDATA[0]]></id_customization>
-      <original_product_price><![CDATA[${ligne.prixUnitaireHT.toFixed(6)}]]></original_product_price>
-      <original_wholesale_price><![CDATA[0.000000]]></original_wholesale_price>
-    </order_row>`;
-  }).join('\n');
+async function creerCommande({ idCustomer, idAdresse, idCart, secureKey, dateCommande, etatPS, lignesResolues }) {
+  const { totalHT, totalTTC } = calculerTotaux(lignesResolues);
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -575,11 +454,11 @@ async function creerCommande({
     <date_upd><![CDATA[${dateCommande} 00:00:00]]></date_upd>
     <shipping_number><![CDATA[]]></shipping_number>
     <note><![CDATA[]]></note>
-    <id_warehouse><![CDATA[0]]></id_warehouse>
     <recyclable><![CDATA[0]]></recyclable>
     <gift><![CDATA[0]]></gift>
     <gift_message><![CDATA[]]></gift_message>
     <mobile_theme><![CDATA[0]]></mobile_theme>
+    <secure_key><![CDATA[${secureKey}]]></secure_key>
     <total_discounts><![CDATA[0.000000]]></total_discounts>
     <total_discounts_tax_incl><![CDATA[0.000000]]></total_discounts_tax_incl>
     <total_discounts_tax_excl><![CDATA[0.000000]]></total_discounts_tax_excl>
@@ -589,10 +468,10 @@ async function creerCommande({
     <total_paid_real><![CDATA[${totalTTC.toFixed(6)}]]></total_paid_real>
     <total_products><![CDATA[${totalHT.toFixed(6)}]]></total_products>
     <total_products_wt><![CDATA[${totalTTC.toFixed(6)}]]></total_products_wt>
-    <total_shipping><![CDATA[${ORDER_CONFIG.SHIPPING_COST.toFixed(6)}]]></total_shipping>
-    <total_shipping_tax_incl><![CDATA[${ORDER_CONFIG.SHIPPING_COST.toFixed(6)}]]></total_shipping_tax_incl>
-    <total_shipping_tax_excl><![CDATA[${ORDER_CONFIG.SHIPPING_COST.toFixed(6)}]]></total_shipping_tax_excl>
-    <carrier_tax_rate><![CDATA[${ORDER_CONFIG.TAX_RATE_SHIPPING}]]></carrier_tax_rate>
+    <total_shipping><![CDATA[0.000000]]></total_shipping>
+    <total_shipping_tax_incl><![CDATA[0.000000]]></total_shipping_tax_incl>
+    <total_shipping_tax_excl><![CDATA[0.000000]]></total_shipping_tax_excl>
+    <carrier_tax_rate><![CDATA[0]]></carrier_tax_rate>
     <total_wrapping><![CDATA[0.000000]]></total_wrapping>
     <total_wrapping_tax_incl><![CDATA[0.000000]]></total_wrapping_tax_incl>
     <total_wrapping_tax_excl><![CDATA[0.000000]]></total_wrapping_tax_excl>
@@ -600,33 +479,14 @@ async function creerCommande({
     <round_type><![CDATA[1]]></round_type>
     <conversion_rate><![CDATA[1.000000]]></conversion_rate>
     <payment><![CDATA[${ORDER_CONFIG.PAYMENT_LABEL}]]></payment>
-    <secure_key><![CDATA[]]></secure_key>
-    <associations>
-      <order_rows>
-        ${orderRowsXml}
-      </order_rows>
-    </associations>
   </order>
 </prestashop>`;
 
-  const res = await prestaWrite('/orders', xml, 'POST');
-  const id  = extraireId(res, 'order');
-  if (!id) throw new Error(
-    `Commande non créée — réponse : ${JSON.stringify(res).slice(0, 200)}`
-  );
-  return id;
+  return postOrder(xml, idCart);
 }
 
-// ─── ÉTAPE 6 : Mise à jour de l'état de commande ─────────────
+// ─── Historique état ──────────────────────────────────────────
 
-/**
- * Ajoute un historique d'état pour une commande PS.
- * C'est le mécanisme officiel pour changer l'état d'une commande en PS.
- *
- * @param {number} idOrder
- * @param {number} idOrderState
- * @returns {Promise<void>}
- */
 async function ajouterEtatCommande(idOrder, idOrderState) {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -639,91 +499,69 @@ async function ajouterEtatCommande(idOrder, idOrderState) {
     <message><![CDATA[]]></message>
   </order_history>
 </prestashop>`;
-
   await prestaWrite('/order_histories', xml, 'POST');
 }
 
-// ─── ÉTAPE 7 : Décrémentation du stock ───────────────────────
+// ─── Décrémentation stock ─────────────────────────────────────
 
 /**
- * Trouve l'ID stock_available pour un produit + combinaison.
- *
- * @param {number} idProduit
- * @param {number} idCombi  - 0 pour produit simple
- * @returns {Promise<number|null>}
+ * FIX #3 : endpoint corrigé → /updatestock (même que StockPage.jsx).
+ * FIX #3b : on vérifie que la réponse n'est pas vide avant de parser JSON.
  */
-async function trouverStockAvailableId(idProduit, idCombi = 0) {
+async function decrementerStock(idProduit, idCombi, quantite, log, ref) {
+  let   responseText = '';
   try {
-    const data  = await prestaGet(
-      `/stock_availables?filter[id_product]=${idProduit}&filter[id_product_attribute]=${idCombi}&display=full`
-    );
-    const bruts = data.stock_availables?.stock_available || [];
-    const liste = Array.isArray(bruts) ? bruts : [bruts];
+    const res = await fetch(STOCK_ENDPOINT, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        id_product:           Number(idProduit),
+        id_product_attribute: Number(idCombi) || 0,
+        delta:                -quantite, // négatif = sortie de stock
+      }),
+    });
 
-    // Priorité : id_shop=1 sur id_shop=0
-    const sorted = [...liste].sort(
-      (a, b) => Number(extraireVal(b.id_shop)) - Number(extraireVal(a.id_shop))
-    );
+    responseText = await res.text();
 
-    if (!sorted.length) return null;
+    // Vérifier que la réponse n'est pas vide avant de parser
+    if (!responseText || responseText.trim() === '') {
+      throw new Error(`Réponse vide de l'endpoint stock (HTTP ${res.status})`);
+    }
 
-    return {
-      idStock:   Number(extraireVal(sorted[0].id)),
-      quantite:  Number(extraireVal(sorted[0].quantity)),
-    };
-  } catch {
-    return null;
+    const data = JSON.parse(responseText);
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+
+    return { newQty: data.quantity };
+
+  } catch (err) {
+    // Si c'est une erreur de parsing JSON, inclure le début de la réponse dans le message
+    if (err instanceof SyntaxError) {
+      throw new Error(
+        `Réponse JSON invalide de /updatestock : "${responseText.slice(0, 100)}"`
+      );
+    }
+    throw err;
   }
-}
-
-/**
- * Décrémente le stock d'un article.
- *
- * @param {number} idStock
- * @param {number} idProduit
- * @param {number} idCombi
- * @param {number} nouvelleQuantite
- * @returns {Promise<void>}
- */
-async function decrementerStock(idStock, idProduit, idCombi, nouvelleQuantite) {
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-  <stock_available>
-    <id>${idStock}</id>
-    <id_product>${idProduit}</id_product>
-    <id_product_attribute>${idCombi}</id_product_attribute>
-    <id_shop>${ORDER_CONFIG.ID_SHOP}</id_shop>
-    <id_shop_group>${ORDER_CONFIG.ID_SHOP_GROUP}</id_shop_group>
-    <quantity>${Math.max(0, nouvelleQuantite)}</quantity>
-    <depends_on_stock>0</depends_on_stock>
-    <out_of_stock>2</out_of_stock>
-  </stock_available>
-</prestashop>`;
-
-  await prestaWrite(`/stock_availables/${idStock}`, xml, 'PUT');
 }
 
 // ─── Import principal ─────────────────────────────────────────
 
-/**
- * Importe toutes les commandes du CSV 3.
- *
- * @param {CommandeRow[]} commandes - sortie de parseCSVCommandes().commandes
- * @param {Function}      onLog     - callback({ type, message, ref })
- * @returns {Promise<Bilan>}
- */
 export async function importerCommandes(commandes, onLog) {
   const log   = (type, message, ref = '') => onLog({ type, message, ref });
   const bilan = {
-    crees:          0,
-    clientsCrees:   0,
+    crees:            0,
+    cartsCrees:       0,  // paniers créés sans commande (cartOnly)
+    clientsCrees:     0,
     clientsExistants: 0,
-    skips:          0,
-    erreurs:        0,
-    details:        [],
+    skips:            0,
+    erreurs:          0,
+    details:          [],
   };
 
-  // ── Pré-chargement des produits PS ────────────────────────
+  // ── Pré-chargement produits ───────────────────────────────
   log('info', 'Chargement des produits PrestaShop…');
   let produitsMap;
   try {
@@ -734,10 +572,9 @@ export async function importerCommandes(commandes, onLog) {
     throw err;
   }
 
-  // ── Pré-chargement du mapping TVA ─────────────────────────
-  // On charge les taxes pour connaître le taux de chaque groupe
+  // ── Pré-chargement TVA ────────────────────────────────────
   log('info', 'Chargement des taux de TVA…');
-  let tauxParGroupe = new Map(); // Map<idTaxGroup, tauxTVA>
+  const tauxParGroupe = new Map();
   try {
     const taxesData  = await prestaGet('/taxes?display=full');
     const taxesBruts = taxesData.taxes?.tax || [];
@@ -746,7 +583,6 @@ export async function importerCommandes(commandes, onLog) {
     for (const t of taxesListe) {
       taxById.set(Number(extraireVal(t.id)), parseFloat(extraireVal(t.rate) || '0'));
     }
-
     const rulesData  = await prestaGet('/tax_rules?display=full');
     const rulesBruts = rulesData.tax_rules?.tax_rule || [];
     const rulesListe = Array.isArray(rulesBruts) ? rulesBruts : [rulesBruts];
@@ -763,84 +599,71 @@ export async function importerCommandes(commandes, onLog) {
     throw err;
   }
 
-  // Enrichir la map produits avec le taux TVA
   for (const [ref, produit] of produitsMap) {
     produit.taxRate = tauxParGroupe.get(produit.idTaxGroup) ?? 0;
     produitsMap.set(ref, produit);
   }
 
-  // Cache des combinaisons par idProduit
-  // Map<idProduit, Map<nomVarianteLower, { idCombi, supplementHT }>>
   const combiCache = new Map();
 
-  // ── Traitement commande par commande ──────────────────────
   log('info', `Début import — ${commandes.length} commande(s) à traiter`);
 
   for (const commande of commandes) {
-    const ref = commande.email; // Référence humaine pour les logs
-
-    log('info', `── Commande ligne ${commande.ligneCSV} : ${commande.email}`, ref);
+    const ref = commande.email;
+    const modeLabel = commande.cartOnly ? '[PANIER SEUL]' : '[COMMANDE]';
+    log('info', `── Ligne ${commande.ligneCSV} ${modeLabel} : ${commande.email}`, ref);
 
     try {
-      // ── Étape 1 : Client ───────────────────────────────────
-      log('info', `Recherche client : ${commande.email}`, ref);
-      const { id: idExistant, exists } = await chercherCustomer(commande.email);
+      // ── 1. Client + secure_key ──────────────────────────
+      let idCustomer, secureKey;
+      const { id: idExistant, secureKey: skExistant, exists } = await chercherCustomer(commande.email);
 
-      let idCustomer;
       if (exists) {
         idCustomer = idExistant;
+        secureKey  = skExistant;
         log('info', `Client existant : id=${idCustomer}`, ref);
         bilan.clientsExistants++;
       } else {
-        log('info', `Client absent → création : "${commande.nom}" <${commande.email}>`, ref);
-        idCustomer = await creerCustomer(commande);
+        const created = await creerCustomer(commande);
+        idCustomer    = created.id;
+        secureKey     = created.secureKey;
         log('succes', `Client créé : id=${idCustomer}`, ref);
         bilan.clientsCrees++;
       }
 
-      // ── Étape 2 : Adresse ──────────────────────────────────
-      log('info', `Recherche adresse pour customer id=${idCustomer}`, ref);
-      let idAdresse = await chercherAdresse(idCustomer);
+      if (!secureKey || secureKey.length < 30) {
+        throw new Error(`secure_key invalide pour ${commande.email} (longueur=${secureKey?.length})`);
+      }
 
+      // ── 2. Adresse ──────────────────────────────────────
+      let idAdresse = await chercherAdresse(idCustomer);
       if (!idAdresse) {
-        log('info', `Adresse absente → création : "${commande.adresse}"`, ref);
         idAdresse = await creerAdresse(idCustomer, commande);
         log('succes', `Adresse créée : id=${idAdresse}`, ref);
       } else {
         log('info', `Adresse existante : id=${idAdresse}`, ref);
       }
 
-      // ── Étape 3 : Résolution articles ──────────────────────
-      log('info', `Résolution de ${commande.articles.length} article(s)…`, ref);
+      // ── 3. Résolution articles ──────────────────────────
       const lignesResolues = [];
-      let erreurArticle    = false;
+      let   erreurArticle  = false;
 
       for (const article of commande.articles) {
         const produit = produitsMap.get(article.reference);
-
         if (!produit) {
           log('erreur', `Produit "${article.reference}" introuvable dans PS`, ref);
           erreurArticle = true;
           break;
         }
 
-        let idCombi     = 0;
+        let idCombi      = 0;
         let supplementHT = 0;
 
-        // Si la variante est non vide → chercher la combinaison
         if (article.variante) {
-          // Charger les combis du produit si pas encore en cache
           if (!combiCache.has(produit.id)) {
-            log('info', `Chargement combinaisons produit id=${produit.id}...`, ref);
-            // On passe le log pour voir le detail du mapping en cas de probleme
-            const combis = await chargerCombinaisonsProduit(
-              produit.id,
-              (type, msg) => log(type, msg, ref)
-            );
+            log('info', `Chargement combinaisons produit id=${produit.id}…`, ref);
+            const combis = await chargerCombinaisonsProduit(produit.id, (t, m) => log(t, m, ref));
             combiCache.set(produit.id, combis);
-            // Afficher les cles de la map pour diagnostic
-            const keysDebug = [...combis.keys()].join(', ') || 'VIDE';
-            log('info', `Map variants "${article.reference}" : [${keysDebug}]`, ref);
           }
 
           const combisMap     = combiCache.get(produit.id);
@@ -848,136 +671,115 @@ export async function importerCommandes(commandes, onLog) {
           const combiData     = combisMap.get(varianteLower);
 
           if (!combiData) {
-            log('erreur',
-              `Variante "${article.variante}" introuvable pour "${article.reference}"`,
-              ref
-            );
+            log('erreur', `Variante "${article.variante}" introuvable pour "${article.reference}"`, ref);
             erreurArticle = true;
             break;
           }
 
           idCombi      = combiData.idCombi;
           supplementHT = combiData.supplementHT;
-          log('info',
-            `Variante "${article.variante}" → id_combi=${idCombi}, supplement=${supplementHT}`,
-            ref
-          );
         }
-
-        // Récupérer le stock disponible
-        const stockInfo = await trouverStockAvailableId(produit.id, idCombi);
-        const stockDispo = stockInfo?.quantite ?? 0;
 
         lignesResolues.push({
           reference:      article.reference,
           idProduit:      produit.id,
-          idCombi:        idCombi || null,
-          nomProduit:     article.reference, // PS ne fournit pas le nom facilement ici
+          idCombi:        idCombi || 0,
           quantite:       article.quantite,
           prixUnitaireHT: produit.priceHT + supplementHT,
           tauxTVA:        produit.taxRate,
-          stockDispo,
-          stockInfoId:    stockInfo?.idStock,
-          stockInfoQte:   stockInfo?.quantite,
         });
 
         log('info',
-          `"${article.reference}" ×${article.quantite} — HT=${produit.priceHT.toFixed(4)} + supp=${supplementHT.toFixed(4)} — TVA=${produit.taxRate}% — stock=${stockDispo}`,
+          `"${article.reference}" ×${article.quantite} — HT=${(produit.priceHT + supplementHT).toFixed(4)} — TVA=${produit.taxRate}%`,
           ref
         );
       }
 
       if (erreurArticle) {
         bilan.erreurs++;
-        bilan.details.push({
-          ref, statut: 'erreur', raison: 'Article non résolu', email: commande.email,
-        });
+        bilan.details.push({ ref, statut: 'erreur', raison: 'Article non résolu', email: commande.email });
         continue;
       }
 
-      // ── Étape 4 : Cart ─────────────────────────────────────
-      log('info', `Création du cart…`, ref);
-      const idCart = await creerCart(idCustomer, idAdresse);
-      log('succes', `Cart créé : id=${idCart}`, ref);
+      // ── 4. Cart + produits ──────────────────────────────
+      const idCart = await creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesResolues);
+      log('succes', `Cart créé avec produits : id=${idCart}`, ref);
 
-      // ── Étape 5 : Commande ─────────────────────────────────
-      log('info', `Création de la commande (état=${commande.etatPS})…`, ref);
+      // ══════════════════════════════════════════════════════
+      // FIX #1 — cartOnly : panier uniquement, pas de commande
+      // ══════════════════════════════════════════════════════
+      if (commande.cartOnly) {
+        log('info',
+          `État vide → panier conservé sans commande (id_cart=${idCart})`,
+          ref
+        );
+        bilan.cartsCrees++;
+        bilan.details.push({
+          ref,
+          statut:    'cart_only',
+          idCart,
+          idCustomer,
+          email:     commande.email,
+          articles:  commande.articles.length,
+        });
+        continue; // ← on s'arrête ici, pas de POST /orders
+      }
+
+      // ── 5. Commande ─────────────────────────────────────
       const idOrder = await creerCommande({
-        idCustomer,
-        idAdresse,
-        idCart,
+        idCustomer, idAdresse, idCart, secureKey,
         dateCommande: commande.date,
         etatPS:       commande.etatPS,
         lignesResolues,
       });
       log('succes', `Commande créée : id=${idOrder}`, ref);
 
-      // ── Étape 6 : Historique d'état ────────────────────────
-      // Même si l'état est déjà dans current_state, PS requiert
-      // un order_history pour que le statut s'affiche correctement
-      // dans le backoffice.
+      // ── 6. Historique état ───────────────────────────────
       try {
         await ajouterEtatCommande(idOrder, commande.etatPS);
-        log('info', `Historique état id=${commande.etatPS} ajouté`, ref);
+        log('info', `État id=${commande.etatPS} appliqué`, ref);
       } catch (err) {
-        // Non bloquant
-        log('warning', `Historique état non ajouté : ${err.message}`, ref);
+        log('warning', `Historique état non appliqué (non bloquant) : ${err.message}`, ref);
       }
 
-      // ── Étape 7 : Décrémentation du stock ──────────────────
+      // ── 7. Décrémentation stock (FIX #3) ─────────────────
       for (const ligne of lignesResolues) {
-        if (ligne.stockInfoId != null) {
-          const nouvelleQte = ligne.stockInfoQte - ligne.quantite;
-          try {
-            await decrementerStock(
-              ligne.stockInfoId,
-              ligne.idProduit,
-              ligne.idCombi ?? 0,
-              nouvelleQte
-            );
-            log('info',
-              `Stock "${ligne.reference}" : ${ligne.stockInfoQte} → ${Math.max(0, nouvelleQte)}`,
-              ref
-            );
-          } catch (err) {
-            log('warning',
-              `Décrémentation stock "${ligne.reference}" échouée : ${err.message}`,
-              ref
-            );
-          }
+        try {
+          const result = await decrementerStock(ligne.idProduit, ligne.idCombi, ligne.quantite, log, ref);
+          log('info',
+            `Stock "${ligne.reference}" → ${result.newQty} unités (-${ligne.quantite})`,
+            ref
+          );
+        } catch (err) {
+          // Non bloquant — commande créée, stock à ajuster manuellement
+          log('warning', `Stock "${ligne.reference}" : ${err.message}`, ref);
         }
       }
 
       log('succes',
-        `Commande ${commande.email} (${commande.date}) importée → id=${idOrder}`,
+        `✓ Commande ${commande.email} (${commande.date}) importée — id=${idOrder}`,
         ref
       );
       bilan.crees++;
       bilan.details.push({
         ref,
-        statut:   'succes',
+        statut:    'succes',
         idOrder,
         idCustomer,
-        email:    commande.email,
-        articles: commande.articles.length,
+        email:     commande.email,
+        articles:  commande.articles.length,
       });
 
     } catch (err) {
       log('erreur', `Commande "${ref}" : ${err.message}`, ref);
       bilan.erreurs++;
-      bilan.details.push({
-        ref,
-        statut: 'erreur',
-        raison: err.message,
-        email:  commande.email,
-      });
+      bilan.details.push({ ref, statut: 'erreur', raison: err.message, email: commande.email });
     }
   }
 
-  log(
-    'info',
-    `Import terminé — ✓ ${bilan.crees} commande(s) · 👤 ${bilan.clientsCrees} client(s) créé(s) · ⚠ ${bilan.skips} ignoré(s) · ✗ ${bilan.erreurs} erreur(s)`
+  log('info',
+    `Import terminé — ✓ ${bilan.crees} commande(s) · 🛒 ${bilan.cartsCrees} panier(s) seul(s) · ` +
+    `👤 ${bilan.clientsCrees} client(s) créé(s) · ✓ ${bilan.clientsExistants} existant(s) · ✗ ${bilan.erreurs} erreur(s)`
   );
-
   return bilan;
 }

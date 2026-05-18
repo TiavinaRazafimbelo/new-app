@@ -1,5 +1,5 @@
 // =============================================================
-// src/api/client.js
+// src/backoffice/reset/client.js
 //
 // USAGE : Utilisé par TOUS les fichiers api/ (front ET back-office)
 //

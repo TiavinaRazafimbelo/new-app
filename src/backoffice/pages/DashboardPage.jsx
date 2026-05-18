@@ -68,7 +68,7 @@ function TableauCommandes({ commandes }) {
   return (
     <div className="tableau-jour">
       <h3 className="tableau-jour__titre">
-        <span className="tableau-jour__icone">📦</span>
+        <span className="tableau-jour__icone"></span>
         Commandes
         <span className="tableau-jour__badge">{commandes.length}</span>
       </h3>
@@ -131,7 +131,7 @@ function TableauPaniers({ paniers }) {
   return (
     <div className="tableau-jour tableau-jour--panier">
       <h3 className="tableau-jour__titre">
-        <span className="tableau-jour__icone">🛒</span>
+        <span className="tableau-jour__icone"></span>
         Paniers abandonnés
         <span className="tableau-jour__badge tableau-jour__badge--panier">{paniers.length}</span>
       </h3>
@@ -242,21 +242,21 @@ function SectionTotaux({ commandesPayees, tousLesPaniers, commandesTotales }) {
       {/* Ligne 1 : compteurs */}
       <div className="cartes-grille cartes-grille--3">
         <CarteStats
-          icone="✅"
+          icone=""
           libelle="Commandes payées"
           valeur={commandesPayees.length}
           sous={`sur ${commandesTotales.length} commande${commandesTotales.length > 1 ? 's' : ''} au total`}
           couleur="vert"
         />
         <CarteStats
-          icone="🛒"
+          icone=""
           libelle="Paniers abandonnés"
           valeur={tousLesPaniers.length}
           sous="Avec articles, sans paiement"
           couleur="neutre"
         />
         <CarteStats
-          icone="📋"
+          icone=""
           libelle="Total commandes"
           valeur={commandesTotales.length}
           sous="Tous statuts"
@@ -271,7 +271,7 @@ function SectionTotaux({ commandesPayees, tousLesPaniers, commandesTotales }) {
         {/* CA réel : paiements uniquement */}
         <div className="carte-totaux carte-totaux--reel">
           <div className="carte-totaux__header">
-            <span className="carte-totaux__icone">💶</span>
+            <span className="carte-totaux__icone"></span>
             <span className="carte-totaux__titre">CA réel (paiements effectués)</span>
           </div>
           <div className="carte-totaux__montant">{montantFR(caReel)}</div>
@@ -283,7 +283,7 @@ function SectionTotaux({ commandesPayees, tousLesPaniers, commandesTotales }) {
         {/* CA potentiel : réel + paniers */}
         <div className="carte-totaux carte-totaux--potentiel">
           <div className="carte-totaux__header">
-            <span className="carte-totaux__icone">💡</span>
+            <span className="carte-totaux__icone"></span>
             <span className="carte-totaux__titre">CA potentiel (+ paniers)</span>
           </div>
           <div className="carte-totaux__montant">{montantFR(caCombine)}</div>
@@ -400,21 +400,21 @@ const DashboardPage = () => {
           {/* Cartes résumé du jour */}
           <div className="cartes-grille cartes-grille--3">
             <CarteStats
-              icone="📦"
+              icone=""
               libelle="Commandes"
               valeur={commandesJour.length}
               sous={`${commandesJourPayees.length} payée${commandesJourPayees.length > 1 ? 's' : ''} sur ${commandesJour.length}`}
               couleur="bleu"
             />
             <CarteStats
-              icone="🛒"
+              icone=""
               libelle="Paniers abandonnés"
               valeur={paniersJour.length}
               sous={paniersJour.length === 0 ? 'Aucun' : `${montantFR(montantPaniersJour)} en attente`}
               couleur="neutre"
             />
             <CarteStats
-              icone="💶"
+              icone=""
               libelle="Montant encaissé"
               valeur={montantFR(montantJour)}
               sous="Paiements effectués uniquement"
@@ -444,14 +444,14 @@ const DashboardPage = () => {
 
           <div className="cartes-grille cartes-grille--2" style={{ marginBottom: 24 }}>
             <CarteStats
-              icone="📦"
+              icone=""
               libelle="Toutes les commandes"
               valeur={commandesToutes.length}
               sous={`${commandesToutesPayees.length} payée${commandesToutesPayees.length > 1 ? 's' : ''}`}
               couleur="neutre"
             />
             <CarteStats
-              icone="💶"
+              icone=""
               libelle="CA total encaissé"
               valeur={montantFR(commandesToutesPayees.reduce((s, c) => s + (c.total_paid || 0), 0))}
               sous="Paiements effectués uniquement"

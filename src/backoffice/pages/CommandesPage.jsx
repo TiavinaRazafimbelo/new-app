@@ -489,8 +489,8 @@ export const CommandesPage = () => {
       {!chargement && !erreur && afficherCommandes && (
         <>
           <div className="section-label">
-            <span className="section-label__icone">📦</span>
             <span className="section-label__texte">Commandes</span>
+            <b>  :  </b>
             <span className="section-label__count">{totalCommandes}</span>
           </div>
           <TableauCommandes
@@ -510,8 +510,8 @@ export const CommandesPage = () => {
       {!chargement && !erreur && afficherPaniers && (
         <>
           <div className="section-label section-label--panier">
-            <span className="section-label__icone">🛒</span>
             <span className="section-label__texte">Paniers abandonnés</span>
+            <b>  :  </b>
             <span className="section-label__count section-label__count--panier">{totalPaniers}</span>
           </div>
           <TableauPaniers paniers={paniers} />

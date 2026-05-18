@@ -33,7 +33,7 @@ export const ORDER_CONFIG = {
   ID_LANG:             1,
   ID_CURRENCY:         1,
   ID_SHOP:             1,
-  ID_SHOP_GROUP:       0,
+  ID_SHOP_GROUP:       1,
 };
 
 const API_KEY  = import.meta.env.VITE_PRESTA_API_KEY;

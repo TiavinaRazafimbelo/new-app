@@ -1,28 +1,21 @@
 /**
- * ImportOrdersPage.jsx
+ * ImportOrdersPage.jsx — v2
  * src/backoffice/import/ui/ImportOrdersPage.jsx
  * ─────────────────────────────────────────────────────────────
- * Page d'import du CSV 3 (commandes, clients, panier).
- *
- * WORKFLOW UI :
- *   1. Upload du fichier CSV
- *   2. Parsing + validation → aperçu du tableau des commandes
- *   3. Affichage des problèmes de validation ligne par ligne
- *   4. Bouton "Lancer l'import" → injection dans PS avec logs temps réel
- *   5. Rapport final (commandes / clients créés / erreurs)
- *
- * DESIGN : cohérent avec ImportProductsPage et ImportCombinationsPage
+ * MISE À JOUR v2 :
+ *   - Badge "Panier seul" dans l'aperçu pour les lignes cartOnly=true
+ *   - BilanFinal affiche la carte "Paniers" (bilan.cartsCrees)
+ *   - Import appelle parseCSVCommandes (inchangé côté API)
  * ─────────────────────────────────────────────────────────────
  */
 
 import React, { useState, useRef, useCallback } from 'react';
-import { parseCSVCommandes }    from '../parsers/parseOrders.js';
-import { importerCommandes }    from '../importers/importOrders.js';
+import { parseCSVCommandes } from '../parsers/parseOrders.js';
+import { importerCommandes } from '../importers/importOrders.js';
 import './ImportOrdersPage.css';
 
 // ─── Sous-composants ──────────────────────────────────────────
 
-/** Badge coloré selon le type de log */
 function LogBadge({ type }) {
   const map = {
     info:    { label: 'INFO',    cls: 'log-badge--info'    },
@@ -34,7 +27,6 @@ function LogBadge({ type }) {
   return <span className={`log-badge ${cls}`}>{label}</span>;
 }
 
-/** Une ligne de log */
 function LogLigne({ log }) {
   return (
     <div className={`log-ligne log-ligne--${log.type}`}>
@@ -46,9 +38,12 @@ function LogLigne({ log }) {
 }
 
 /**
- * Badge d'état de commande avec couleur selon l'ID PS.
+ * Badge d'état — gère aussi le mode "Panier seul" (cartOnly).
  */
-function EtatBadge({ etatPS, etatRaw }) {
+function EtatBadge({ etatPS, etatRaw, cartOnly }) {
+  if (cartOnly) {
+    return <span className="etat-badge etat--panier">🛒 Panier seul</span>;
+  }
   const config = {
     1: { label: 'En attente',   cls: 'etat--attente'     },
     2: { label: 'Payé',         cls: 'etat--paye'        },
@@ -62,14 +57,12 @@ function EtatBadge({ etatPS, etatRaw }) {
   return <span className={`etat-badge ${cls}`}>{label}</span>;
 }
 
-/**
- * Tableau d'aperçu des commandes validées.
- * Affiche : date, client, email, nb articles, état.
- */
 function ApercuCommandes({ commandes }) {
   if (!commandes.length) return null;
 
-  // Résumé des articles pour une commande
+  const nbCommandes = commandes.filter((c) => !c.cartOnly).length;
+  const nbPaniers   = commandes.filter((c) =>  c.cartOnly).length;
+
   const resumeArticles = (articles) =>
     articles.map((a) =>
       `${a.reference} ×${a.quantite}${a.variante ? ` (${a.variante})` : ''}`
@@ -78,7 +71,13 @@ function ApercuCommandes({ commandes }) {
   return (
     <div className="apercu-wrapper">
       <h3 className="apercu-titre">
-        Aperçu — {commandes.length} commande{commandes.length > 1 ? 's' : ''} valide{commandes.length > 1 ? 's' : ''}
+        Aperçu — {commandes.length} ligne{commandes.length > 1 ? 's' : ''} valide{commandes.length > 1 ? 's' : ''}
+        {nbCommandes > 0 && (
+          <span className="apercu-chip apercu-chip--commande">{nbCommandes} commande{nbCommandes > 1 ? 's' : ''}</span>
+        )}
+        {nbPaniers > 0 && (
+          <span className="apercu-chip apercu-chip--panier">{nbPaniers} panier{nbPaniers > 1 ? 's' : ''} seul{nbPaniers > 1 ? 's' : ''}</span>
+        )}
       </h3>
       <div className="apercu-scroll">
         <table className="apercu-table">
@@ -95,7 +94,7 @@ function ApercuCommandes({ commandes }) {
           </thead>
           <tbody>
             {commandes.map((c, i) => (
-              <tr key={i}>
+              <tr key={i} className={c.cartOnly ? 'row--cart-only' : ''}>
                 <td className="mono">{c.ligneCSV}</td>
                 <td className="mono">{c.dateRaw}</td>
                 <td className="nom-cell">{c.nom}</td>
@@ -109,7 +108,7 @@ function ApercuCommandes({ commandes }) {
                   </span>
                 </td>
                 <td>
-                  <EtatBadge etatPS={c.etatPS} etatRaw={c.etat} />
+                  <EtatBadge etatPS={c.etatPS} etatRaw={c.etat} cartOnly={c.cartOnly} />
                 </td>
               </tr>
             ))}
@@ -120,7 +119,6 @@ function ApercuCommandes({ commandes }) {
   );
 }
 
-/** Tableau des avertissements / erreurs de validation */
 function AvertissementsValidation({ avertissements }) {
   if (!avertissements.length) return null;
   return (
@@ -143,7 +141,9 @@ function AvertissementsValidation({ avertissements }) {
   );
 }
 
-/** Bilan final avec 4 cartes métriques */
+/**
+ * Bilan avec 5 cartes : commandes, paniers, clients créés, existants, erreurs.
+ */
 function BilanFinal({ bilan }) {
   if (!bilan) return null;
   return (
@@ -152,19 +152,23 @@ function BilanFinal({ bilan }) {
       <div className="bilan-cartes">
         <div className="bilan-carte bilan-carte--succes">
           <span className="bilan-carte__val">{bilan.crees}</span>
-          <span className="bilan-carte__label">Commande{bilan.crees > 1 ? 's' : ''}</span>
+          <span className="bilan-carte__label">Commande{bilan.crees !== 1 ? 's' : ''}</span>
+        </div>
+        <div className="bilan-carte bilan-carte--panier">
+          <span className="bilan-carte__val">{bilan.cartsCrees ?? 0}</span>
+          <span className="bilan-carte__label">Panier{(bilan.cartsCrees ?? 0) !== 1 ? 's' : ''} seul{(bilan.cartsCrees ?? 0) !== 1 ? 's' : ''}</span>
         </div>
         <div className="bilan-carte bilan-carte--info">
           <span className="bilan-carte__val">{bilan.clientsCrees}</span>
-          <span className="bilan-carte__label">Client{bilan.clientsCrees > 1 ? 's' : ''} créé{bilan.clientsCrees > 1 ? 's' : ''}</span>
+          <span className="bilan-carte__label">Client{bilan.clientsCrees !== 1 ? 's' : ''} créé{bilan.clientsCrees !== 1 ? 's' : ''}</span>
         </div>
         <div className="bilan-carte bilan-carte--muted">
           <span className="bilan-carte__val">{bilan.clientsExistants}</span>
-          <span className="bilan-carte__label">Client{bilan.clientsExistants > 1 ? 's' : ''} existant{bilan.clientsExistants > 1 ? 's' : ''}</span>
+          <span className="bilan-carte__label">Existant{bilan.clientsExistants !== 1 ? 's' : ''}</span>
         </div>
         <div className="bilan-carte bilan-carte--erreur">
           <span className="bilan-carte__val">{bilan.erreurs}</span>
-          <span className="bilan-carte__label">Erreur{bilan.erreurs > 1 ? 's' : ''}</span>
+          <span className="bilan-carte__label">Erreur{bilan.erreurs !== 1 ? 's' : ''}</span>
         </div>
       </div>
     </div>
@@ -174,30 +178,23 @@ function BilanFinal({ bilan }) {
 // ─── Composant principal ──────────────────────────────────────
 
 export default function ImportOrdersPage() {
-  // États de la machine d'état UI : idle → parsed → importing → done
-  const [phase,           setPhase]           = useState('idle');
-  const [parseResult,     setParseResult]     = useState(null);
-  const [logs,            setLogs]            = useState([]);
-  const [bilan,           setBilan]           = useState(null);
-  const [erreurGlobale,   setErreurGlobale]   = useState('');
+  const [phase,         setPhase]         = useState('idle');
+  const [parseResult,   setParseResult]   = useState(null);
+  const [logs,          setLogs]          = useState([]);
+  const [bilan,         setBilan]         = useState(null);
+  const [erreurGlobale, setErreurGlobale] = useState('');
 
   const fileInputRef = useRef(null);
   const logsEndRef   = useRef(null);
 
-  // ── Callback de log temps réel ──────────────────────────────
   const ajouterLog = useCallback((log) => {
     setLogs((prev) => [...prev, { ...log, ts: Date.now() }]);
-    setTimeout(() => {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 50);
+    setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
   }, []);
 
-  // ── Gestion du fichier uploadé ──────────────────────────────
   function handleFichierChange(e) {
     const fichier = e.target.files[0];
     if (!fichier) return;
-
-    // Réinitialiser tous les états
     setLogs([]); setBilan(null); setErreurGlobale('');
     setParseResult(null); setPhase('idle');
 
@@ -215,7 +212,6 @@ export default function ImportOrdersPage() {
     reader.readAsText(fichier, 'UTF-8');
   }
 
-  // ── Drag & Drop ─────────────────────────────────────────────
   function handleDrop(e) {
     e.preventDefault();
     const fichier = e.dataTransfer.files[0];
@@ -226,12 +222,10 @@ export default function ImportOrdersPage() {
     handleFichierChange({ target: { files: dt.files } });
   }
 
-  // ── Lancer l'import ─────────────────────────────────────────
   async function handleLancerImport() {
     if (!parseResult?.commandes?.length) return;
     setPhase('importing');
     setLogs([]); setBilan(null); setErreurGlobale('');
-
     try {
       const resultat = await importerCommandes(parseResult.commandes, ajouterLog);
       setBilan(resultat);
@@ -242,19 +236,16 @@ export default function ImportOrdersPage() {
     }
   }
 
-  // ── Réinitialiser ───────────────────────────────────────────
   function handleReset() {
     setPhase('idle'); setParseResult(null);
     setLogs([]); setBilan(null); setErreurGlobale('');
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
-  // ── Dérivations ─────────────────────────────────────────────
-  const nbValides    = parseResult?.commandes?.length        || 0;
-  const nbProblemes  = parseResult?.avertissements?.length   || 0;
+  const nbValides   = parseResult?.commandes?.length      || 0;
+  const nbProblemes = parseResult?.avertissements?.length || 0;
   const peutImporter = parseResult?.ok && nbValides > 0 && phase === 'parsed';
 
-  // ─── Render ─────────────────────────────────────────────────
   return (
     <div className="import-page">
 
@@ -266,7 +257,8 @@ export default function ImportOrdersPage() {
             CSV 3 — <code>date, nom, email, pwd, adresse, achat, etat</code>
           </p>
           <p className="import-prerequis">
-            ⚠ Prérequis : les produits (CSV 1) et déclinaisons (CSV 2) doivent être importés.
+            ⚠ Prérequis : CSV 1 (produits) et CSV 2 (déclinaisons) déjà importés.
+            État vide = panier uniquement (pas de commande créée).
           </p>
         </div>
         {phase !== 'idle' && (
@@ -274,7 +266,7 @@ export default function ImportOrdersPage() {
         )}
       </div>
 
-      {/* ── Zone d'upload ────────────────────────────────────── */}
+      {/* ── Upload ──────────────────────────────────────────── */}
       {phase === 'idle' && (
         <div
           className="upload-zone"
@@ -298,7 +290,7 @@ export default function ImportOrdersPage() {
         </div>
       )}
 
-      {/* ── Erreur globale ───────────────────────────────────── */}
+      {/* ── Erreurs globales ─────────────────────────────────── */}
       {erreurGlobale && (
         <div className="erreur-globale">
           <span>⚠</span><span>{erreurGlobale}</span>
@@ -315,10 +307,9 @@ export default function ImportOrdersPage() {
       {/* ── Résultat du parsing ──────────────────────────────── */}
       {parseResult?.ok && phase === 'parsed' && (
         <>
-          {/* Résumé de validation */}
           <div className="validation-resume">
             <div className={`validation-chip ${nbValides > 0 ? 'chip--vert' : 'chip--gris'}`}>
-              ✓ {nbValides} commande{nbValides > 1 ? 's' : ''} valide{nbValides > 1 ? 's' : ''}
+              ✓ {nbValides} ligne{nbValides > 1 ? 's' : ''} valide{nbValides > 1 ? 's' : ''}
             </div>
             {nbProblemes > 0 && (
               <div className="validation-chip chip--orange">
@@ -327,24 +318,20 @@ export default function ImportOrdersPage() {
             )}
           </div>
 
-          {/* Aperçu des commandes valides */}
           <ApercuCommandes commandes={parseResult.commandes} />
-
-          {/* Avertissements */}
           <AvertissementsValidation avertissements={parseResult.avertissements} />
 
-          {/* Bouton lancer l'import */}
           {peutImporter && (
             <div className="import-actions">
               <button className="btn-importer" onClick={handleLancerImport}>
-                ▶ Lancer l'import ({nbValides} commande{nbValides > 1 ? 's' : ''})
+                ▶ Lancer l'import ({nbValides} ligne{nbValides > 1 ? 's' : ''})
               </button>
             </div>
           )}
         </>
       )}
 
-      {/* ── Logs d'import temps réel ─────────────────────────── */}
+      {/* ── Logs ────────────────────────────────────────────── */}
       {(phase === 'importing' || phase === 'done') && logs.length > 0 && (
         <div className="logs-section">
           <div className="logs-header">
@@ -362,7 +349,7 @@ export default function ImportOrdersPage() {
         </div>
       )}
 
-      {/* ── Bilan final ─────────────────────────────────────── */}
+      {/* ── Bilan ────────────────────────────────────────────── */}
       {phase === 'done' && <BilanFinal bilan={bilan} />}
 
     </div>
