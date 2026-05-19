@@ -36,7 +36,7 @@ import ResetDataPage  from './backoffice/pages/ResetDataPage';
 import ImportProductsPage from './backoffice/import/ui/ImportProductsPage';
 import ImportCombinationsPage from './backoffice/import/ui/ImportCombinationsPage'; // CSV 2 — à venir
 import ImportOrdersPage       from './backoffice/import/ui/ImportOrdersPage';       // CSV 3 — à venir
-// import ImportImagesPage        from './backoffice/import/ui/ImportImagesPage';       // ZIP   — à venir
+import ImportImagesPage        from './backoffice/import/ui/ImportImagesPage';       // ZIP   — à venir
 
 // ── Frontoffice : pages ───────────────────────────────────────
 import ProductsPage      from './frontoffice/pages/products';
@@ -49,6 +49,7 @@ import OrdersPage        from './frontoffice/pages/OrdersPage';
 import DiagOrderSchema from './frontoffice/pages/DiagOrderSchema';
 
 import './App.css';
+import StatistiquesPage from './backoffice/pages/StatistiquesPage';
 
 function App() {
   return (
@@ -74,6 +75,7 @@ function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="commandes" element={<CommandesPage />} />
           <Route path="stock"     element={<StockPage />} />
+          <Route path="statistiques"     element={<StatistiquesPage />} />
           <Route path="reset"     element={<ResetDataPage />} />
 
           {/* ── Import CSV ────────────────────────────────────
@@ -91,7 +93,7 @@ function App() {
           
           <Route path="import/combinaisons" element={<ImportCombinationsPage />} />
           <Route path="import/commandes"    element={<ImportOrdersPage />} />
-          {/* <Route path="import/images"       element={<ImportImagesPage />} /> */}
+          <Route path="import/images"       element={<ImportImagesPage />} />
 
           {/* Fallback backoffice */}
           <Route index element={<Navigate to="/backoffice/dashboard" replace />} />

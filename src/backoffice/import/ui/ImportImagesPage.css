@@ -1,0 +1,113 @@
+/**
+ * ImportImagesPage.css
+ * Styles spécifiques à la page import images.
+ * Hérite des classes communes de ImportProductsPage.css
+ */
+
+/* ─── Grille d'aperçu images ─────────────────────────────────── */
+.images-grille {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.image-carte {
+  border: 2px solid #e2e0db;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  transition: box-shadow 0.15s;
+}
+
+.image-carte:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.image-carte--match {
+  border-color: #86efac;
+}
+
+.image-carte--nomatch {
+  border-color: #fca5a5;
+  opacity: 0.75;
+}
+
+.image-carte__preview {
+  width: 100%;
+  height: 130px;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.image-carte__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-carte__info {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.image-carte__ref {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1814;
+}
+
+.image-carte__ext {
+  font-size: 10px;
+  color: #94a3b8;
+  font-family: monospace;
+}
+
+.image-carte__match {
+  font-size: 11px;
+  color: #166534;
+  font-weight: 500;
+}
+
+.image-carte__nomatch {
+  font-size: 11px;
+  color: #991b1b;
+  font-weight: 500;
+}
+
+/* ─── Barre de progression ──────────────────────────────────── */
+.progression-wrapper {
+  margin: 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progression-barre {
+  flex: 1;
+  height: 8px;
+  background: #e2e0db;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progression-barre__fill {
+  height: 100%;
+  background: #2563a8;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progression-label {
+  font-size: 13px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: #6b6860;
+  white-space: nowrap;
+  min-width: 80px;
+}

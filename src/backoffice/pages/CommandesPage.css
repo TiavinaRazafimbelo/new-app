@@ -476,3 +476,74 @@
   .tableau-commandes th,
   .tableau-commandes td { padding: 10px; }
 }
+
+/* ─── Groupe action (select + boutons) ─────────────────────── */
+.action-groupe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+ 
+/* ─── Boutons d'action rapide ──────────────────────────────── */
+.btn-actions-rapides {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+ 
+.btn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.12s, transform 0.08s;
+  white-space: nowrap;
+}
+ 
+.btn-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+ 
+.btn-action:not(:disabled):hover  { opacity: 0.85; }
+.btn-action:not(:disabled):active { transform: scale(0.97); }
+ 
+/* Variante "livrer" → vert */
+.btn-action--vert {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+.btn-action--vert:not(:disabled):hover {
+  background: #bbf7d0;
+}
+ 
+/* Variante "annuler" → rouge */
+.btn-action--rouge {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+.btn-action--rouge:not(:disabled):hover {
+  background: #fca5a5;
+}
+ 
+/* Variante "expédier" → bleu */
+.btn-action--bleu {
+  background: #dbeafe;
+  color: #1e3a5f;
+  border-color: #bfdbfe;
+}
+.btn-action--bleu:not(:disabled):hover {
+  background: #bfdbfe;
+}
+ 
+.btn-action__icone { font-size: 11px; }
+.btn-action__label { font-size: 12px; }

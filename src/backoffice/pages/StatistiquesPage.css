@@ -1,0 +1,369 @@
+/**
+ * StatistiquesPage.css
+ * src/backoffice/pages/StatistiquesPage.css
+ * ─────────────────────────────────────────────────────────────
+ * Palette cohérente avec CommandesPage.css et ImportProductsPage.css
+ * ─────────────────────────────────────────────────────────────
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --c-bg:         #f5f4f2;
+  --c-surface:    #ffffff;
+  --c-border:     #e2e0db;
+  --c-texte:      #1a1814;
+  --c-muted:      #6b6860;
+  --c-accent:     #2563a8;
+  --c-vert:       #166534;
+  --c-vert-bg:    #dcfce7;
+  --c-rouge:      #991b1b;
+  --c-rouge-bg:   #fee2e2;
+  --c-orange:     #92400e;
+  --c-orange-bg:  #fef3c7;
+  --c-bleu:       #1e3a5f;
+  --c-bleu-bg:    #dbeafe;
+  --c-info:       #075985;
+  --c-info-bg:    #e0f2fe;
+  --rayon:        4px;
+  --ombre:        0 1px 3px rgba(0,0,0,0.07);
+}
+
+/* ─── Page ───────────────────────────────────────────────────── */
+.stats-page {
+  font-family: 'DM Sans', sans-serif;
+  color: var(--c-texte);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  animation: entree 0.2s ease-out both;
+}
+
+@keyframes entree {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── En-tête ─────────────────────────────────────────────────── */
+.stats-entete {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stats-titre {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.stats-sous-titre {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-muted);
+}
+
+.btn-actualiser {
+  padding: 8px 16px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  border-radius: var(--rayon);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--c-texte);
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.btn-actualiser:hover:not(:disabled) { background: var(--c-bg); }
+.btn-actualiser:disabled { opacity: 0.5; cursor: default; }
+
+/* ─── Chargement ──────────────────────────────────────────────── */
+.stats-chargement {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 0;
+  color: var(--c-muted);
+  font-size: 14px;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--c-border);
+  border-top-color: var(--c-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Erreur ──────────────────────────────────────────────────── */
+.stats-erreur {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--c-rouge-bg);
+  border: 1px solid #fca5a5;
+  border-radius: var(--rayon);
+  font-size: 13px;
+  color: var(--c-rouge);
+}
+
+.stats-erreur strong { display: block; margin-bottom: 4px; }
+.stats-erreur p      { margin: 0 0 8px; }
+
+.btn-reessayer {
+  padding: 6px 14px;
+  background: var(--c-rouge);
+  color: #fff;
+  border: none;
+  border-radius: var(--rayon);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.btn-reessayer:hover { opacity: 0.85; }
+
+/* ─── KPI Grille ──────────────────────────────────────────────── */
+.kpi-grille {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: var(--rayon);
+  border: 1px solid transparent;
+  box-shadow: var(--ombre);
+}
+
+.kpi-card--bleu   { background: var(--c-bleu-bg);   border-color: #bfdbfe; color: var(--c-bleu);   }
+.kpi-card--vert   { background: var(--c-vert-bg);   border-color: #bbf7d0; color: var(--c-vert);   }
+.kpi-card--orange { background: var(--c-orange-bg); border-color: #fde68a; color: var(--c-orange); }
+.kpi-card--rouge  { background: var(--c-rouge-bg);  border-color: #fca5a5; color: var(--c-rouge);  }
+
+.kpi-card__icone {
+  font-size: 28px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.kpi-card__corps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kpi-card__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  opacity: 0.75;
+}
+
+.kpi-card__valeur {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+/* ─── Sections ────────────────────────────────────────────────── */
+.stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stats-section__entete {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stats-section__titre {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.stats-section__hint {
+  font-size: 12px;
+  color: var(--c-muted);
+}
+
+/* ─── Tableaux ────────────────────────────────────────────────── */
+.stats-tableau-wrapper {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--rayon);
+  box-shadow: var(--ombre);
+  overflow-x: auto;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.stats-table thead tr {
+  background: #faf9f7;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.stats-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+.stats-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f0ede8;
+  vertical-align: middle;
+}
+
+.stats-table tbody tr:last-child td { border-bottom: none; }
+.stats-table tbody tr:hover          { background: #faf9f7; }
+
+/* Colonnes */
+.col-cat   { width: 30%; min-width: 120px; }
+.col-num   { text-align: right; font-family: 'IBM Plex Mono', monospace; }
+.col-marge { min-width: 120px; }
+.col-qty   { text-align: center; }
+
+/* ─── Montants ────────────────────────────────────────────────── */
+.montant         { font-family: 'IBM Plex Mono', monospace; }
+.montant--muted  { color: var(--c-muted); }
+.montant--positif { color: var(--c-vert); font-weight: 500; }
+.montant--negatif { color: var(--c-rouge); font-weight: 500; }
+
+/* ─── Catégorie label ─────────────────────────────────────────── */
+.cat-label {
+  display: inline-block;
+  padding: 3px 8px;
+  background: var(--c-bleu-bg);
+  color: var(--c-bleu);
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ─── Badge quantité vendue ───────────────────────────────────── */
+.qty-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  color: #374151;
+  border-radius: 20px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ─── Barre de marge ──────────────────────────────────────────── */
+.barre-marge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.barre-marge__fill {
+  height: 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  /* la width est définie inline */
+  min-width: 2px;
+  max-width: 80px;
+  /* on fait varier la width en pourcentage de 80px */
+  width: calc(var(--pct, 0) * 0.8px);
+  transition: width 0.3s ease;
+}
+
+/* Astuce : on lit la width depuis le style inline, pas de var CSS */
+.barre-marge__fill--vert   { background: var(--c-vert);   }
+.barre-marge__fill--orange { background: #f59e0b;          }
+.barre-marge__fill--rouge  { background: var(--c-rouge);  }
+
+.barre-marge__label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+/* ─── Ligne totaux ────────────────────────────────────────────── */
+.stats-row--total {
+  background: #faf9f7;
+  border-top: 2px solid var(--c-border);
+}
+
+.stats-row--total td {
+  font-size: 13px;
+  border-bottom: none;
+}
+
+/* ─── Stock pills ─────────────────────────────────────────────── */
+.col-qty--physique { color: var(--c-bleu);   }
+.col-qty--reserve  { color: var(--c-orange); }
+.col-qty--dispo    { color: var(--c-vert);   }
+
+.qty-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  min-width: 32px;
+  text-align: center;
+}
+
+.qty-pill--physique  { background: var(--c-bleu-bg);   color: var(--c-bleu);   }
+.qty-pill--reserve   { background: var(--c-orange-bg); color: var(--c-orange); }
+.qty-pill--dispo     { background: var(--c-vert-bg);   color: var(--c-vert);   }
+.qty-pill--rupture   { background: var(--c-rouge-bg);  color: var(--c-rouge);  }
+
+.qty-zero { color: var(--c-muted); font-size: 12px; }
+
+/* ─── Stats vide ──────────────────────────────────────────────── */
+.stats-vide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px;
+  color: var(--c-muted);
+  font-size: 14px;
+}
+
+.stats-vide span { font-size: 36px; }
+
+/* ─── Tableau stock alignements ───────────────────────────────── */
+.stats-table--stock .col-qty {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.stats-table--stock th.col-qty--physique { color: var(--c-bleu);   }
+.stats-table--stock th.col-qty--reserve  { color: var(--c-orange); }
+.stats-table--stock th.col-qty--dispo    { color: var(--c-vert);   }

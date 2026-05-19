@@ -21,8 +21,12 @@ import {
   updateStatutCommande,
   STATUT_PANIER_ID,
   STATUT_PANIER_LABEL,
-  STATUT_PAYE_LABEL,
+  STATUT_PAYE_LABEL,   
+  updateOrderAction,    
+  ACTIONS_PAR_ETAT,     
+  ACTION_LABELS,        
 } from '../services/commandesService';
+
 import './CommandesPage.css';
 
 const LIMIT = 20;
@@ -71,17 +75,29 @@ function BadgeStatut({ libelle }) {
 
 // ─── Ligne commande (order) ────────────────────────────────────
 
-function LigneCommande({ commande, statuts, statutsModifiables, onStatutChange, enCoursDeMaj }) {
-  const [statutSel, setStatutSel] = useState(commande.current_state?.toString() || '');
-
-  useEffect(() => {
+function LigneCommande({
+  commande,
+  statuts,
+  statutsModifiables,
+  onStatutChange,
+  onAction,          // ← NOUVEAU : handler pour livrer/annuler
+  enCoursDeMaj,
+}) {
+  const [statutSel, setStatutSel] = React.useState(
+    commande.current_state?.toString() || ''
+  );
+ 
+  React.useEffect(() => {
     setStatutSel(commande.current_state?.toString() || '');
   }, [commande.current_state]);
-
+ 
   const statutActuel = statuts.find(
     (s) => s.id?.toString() === commande.current_state?.toString()
   );
-
+ 
+  // Actions disponibles pour cet état
+  const actionsDispos = ACTIONS_PAR_ETAT[Number(commande.current_state)] ?? [];
+ 
   return (
     <tr className={`ligne-commande ${enCoursDeMaj ? 'ligne-commande--maj' : ''}`}>
       <td className="col-id">
@@ -92,8 +108,12 @@ function LigneCommande({ commande, statuts, statutsModifiables, onStatutChange, 
       </td>
       <td className="col-client">
         <div className="client-info">
-          <span className="client-nom">{commande.firstname} {commande.lastname}</span>
-          {commande.email && <span className="client-email">{commande.email}</span>}
+          <span className="client-nom">
+            {commande.firstname} {commande.lastname}
+          </span>
+          {commande.email && (
+            <span className="client-email">{commande.email}</span>
+          )}
         </div>
       </td>
       <td className="col-date">
@@ -104,28 +124,66 @@ function LigneCommande({ commande, statuts, statutsModifiables, onStatutChange, 
           : '—'}
       </td>
       <td className="col-total">
-        <span className="montant">{montantFR(commande.total_paid)}</span>
+        <span className="montant">
+          {Number(commande.total_paid || 0).toLocaleString('fr-FR', {
+            style: 'currency', currency: 'EUR',
+          })}
+        </span>
       </td>
       <td className="col-statut">
-        <BadgeStatut libelle={statutActuel?.name || '—'} />
+        {/* Badge statut actuel */}
+        <span className={`badge badge--${getCouleurStatut(statutActuel?.name || '')}`}>
+          {statutActuel?.name || '—'}
+        </span>
       </td>
       <td className="col-action">
-        <div className="select-wrapper">
-          <select
-            value={statutSel}
-            onChange={(e) => {
-              setStatutSel(e.target.value);
-              onStatutChange(commande.id, e.target.value);
-            }}
-            disabled={enCoursDeMaj}
-            className="select-statut"
-          >
-            <option value="" disabled>Choisir…</option>
-            {statutsModifiables.map((s) => (
-              <option key={s.id} value={s.id.toString()}>{s.name}</option>
-            ))}
-          </select>
-          {enCoursDeMaj && <span className="spinner-inline" />}
+        <div className="action-groupe">
+ 
+          {/* Select de statut (existant) */}
+          <div className="select-wrapper">
+            <select
+              value={statutSel}
+              onChange={(e) => {
+                setStatutSel(e.target.value);
+                onStatutChange(commande.id, e.target.value);
+              }}
+              disabled={enCoursDeMaj}
+              className="select-statut"
+            >
+              <option value="" disabled>Choisir…</option>
+              {statutsModifiables.map((s) => (
+                <option key={s.id} value={s.id.toString()}>{s.name}</option>
+              ))}
+            </select>
+            {enCoursDeMaj && <span className="spinner-inline" />}
+          </div>
+ 
+          {/* ── Boutons d'action rapide ─────────────────────────
+              Affichés uniquement si des actions sont disponibles
+              pour l'état actuel (ACTIONS_PAR_ETAT).
+              Les états terminaux (livré=5, annulé=6) n'ont pas
+              d'actions → les boutons sont masqués.
+          ─────────────────────────────────────────────────────── */}
+          {actionsDispos.length > 0 && (
+            <div className="btn-actions-rapides">
+              {actionsDispos.map((action) => {
+                const cfg = ACTION_LABELS[action];
+                return (
+                  <button
+                    key={action}
+                    className={`btn-action btn-action--${cfg.style}`}
+                    onClick={() => onAction(commande.id, action)}
+                    disabled={enCoursDeMaj}
+                    title={cfg.label}
+                  >
+                    <span className="btn-action__icone">{cfg.icon}</span>
+                    <span className="btn-action__label">{cfg.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+ 
         </div>
       </td>
     </tr>
@@ -134,7 +192,7 @@ function LigneCommande({ commande, statuts, statutsModifiables, onStatutChange, 
 
 // ─── Tableau commandes ─────────────────────────────────────────
 
-function TableauCommandes({ commandes, statuts, statutsModifiables, onStatutChange, majEnCours, pages, pageActuelle, onPage }) {
+function TableauCommandes({ commandes, statuts, statutsModifiables, onStatutChange, onAction, majEnCours, pages, pageActuelle, onPage }) {
   return (
     <div className="commandes-contenu">
       {commandes.length === 0 ? (
@@ -166,6 +224,7 @@ function TableauCommandes({ commandes, statuts, statutsModifiables, onStatutChan
                     statuts={statuts}
                     statutsModifiables={statutsModifiables}
                     onStatutChange={onStatutChange}
+                    onAction={onAction}
                     enCoursDeMaj={!!majEnCours[c.id]}
                   />
                 ))}
@@ -390,6 +449,30 @@ export const CommandesPage = () => {
     }
   };
 
+  const handleAction = async (commandeId, action) => {
+    // On utilise la même map enCoursDeMaj pour désactiver les boutons
+    setMajEnCours((prev) => ({ ...prev, [commandeId]: true }));
+    try {
+      const result = await updateOrderAction(commandeId, action);
+ 
+      // Mettre à jour l'état localement sans recharger toute la page
+      setCommandes((prev) =>
+        prev.map((c) =>
+          c.id === commandeId
+            ? { ...c, current_state: String(result.current_state) }
+            : c
+        )
+      );
+ 
+      const label = ACTION_LABELS[action]?.label || action;
+      afficherToast(`${label} appliqué avec succès`, 'succes');
+    } catch (err) {
+      afficherToast(`Erreur : ${err.message}`, 'erreur');
+    } finally {
+      setMajEnCours((prev) => ({ ...prev, [commandeId]: false }));
+    }
+  };
+
   const afficherToast = (message, type) => {
     setToast({ visible: true, message, type });
     setTimeout(() => setToast((t) => ({ ...t, visible: false })), 3000);
@@ -498,6 +581,7 @@ export const CommandesPage = () => {
             statuts={statuts}
             statutsModifiables={statutsModifiables}
             onStatutChange={handleStatutChange}
+            onAction={handleAction}
             majEnCours={majEnCours}
             pages={pages}
             pageActuelle={pageActuelle}

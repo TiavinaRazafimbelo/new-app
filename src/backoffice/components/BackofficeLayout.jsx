@@ -24,9 +24,11 @@ const NAV_LIENS = [
   { path: '/backoffice/dashboard', label: 'Tableau de bord', icone: '' },
   { path: '/backoffice/commandes', label: 'Commandes',        icone: '' },
   { path: '/backoffice/stock',     label: 'Stock',            icone: '' },
+  { path: '/backoffice/statistiques',     label: 'Statistiques',            icone: '' },
   { path: '/backoffice/import',    label: 'Import',           icone: '' },
   { path: '/backoffice/import/combinaisons', label: 'Import Déclinaisons', icone: '' },
   { path: '/backoffice/import/commandes',    label: 'Import Commandes',   icone: '' }, // ← NOUVEAU
+  { path: '/backoffice/import/images',       label: 'Import Images',      icone: '' }, // ← NOUVEAU
   { path: '/backoffice/reset',     label: 'Reset Data',       icone: '' },
 ];
 
