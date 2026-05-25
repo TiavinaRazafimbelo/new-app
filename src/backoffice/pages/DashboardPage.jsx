@@ -398,7 +398,7 @@ const DashboardPage = () => {
           </div>
 
           {/* Cartes résumé du jour */}
-          <div className="cartes-grille cartes-grille--3">
+          <div className="cartes-grille cartes-grille--4">
             <CarteStats
               icone=""
               libelle="Commandes"
@@ -419,6 +419,13 @@ const DashboardPage = () => {
               valeur={montantFR(montantJour)}
               sous="Paiements effectués uniquement"
               couleur="vert"
+            />
+            <CarteStats
+              icone=""
+              libelle="Total jour (réel + paniers)"
+              valeur={montantFR(montantJour + montantPaniersJour)}
+              sous="Commandes payées + paniers abandonnés"
+              couleur="or"
             />
           </div>
 
