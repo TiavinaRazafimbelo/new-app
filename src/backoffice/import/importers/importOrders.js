@@ -1,35 +1,23 @@
 /**
- * importOrders.js — v5
+ * importOrders.js — v6
  * src/backoffice/import/importers/importOrders.js
  * ─────────────────────────────────────────────────────────────
- * CORRECTIONS v5 :
+ * CORRECTIONS v6 :
  *
- *   FIX #A — ps_cart_product vide :
- *     Après POST /carts (qui crée un cart vide), il faut faire un
- *     PUT /carts/:id avec les associations cart_rows pour insérer
- *     les produits dans ps_cart_product.
- *     Sans ça, PrestaShop crée la commande mais avec 0 article,
- *     ce qui provoque HTTP 500 "No product in cart".
+ *   FIX #E — Correction des dates des paniers abandonnés :
+ *     Les paniers sans commande (état vide dans le CSV) étaient
+ *     stockés dans bilan.details mais pas dans bilan.dateCorrections,
+ *     et l'appel /fix-import-dates n'envoyait pas de "cartOnly".
+ *     Désormais :
+ *       - bilan.cartCorrections[] stocke { idCart, date } pour chaque panier
+ *       - L'appel /fix-import-dates envoie aussi le tableau "cartOnly"
+ *       - fix-import-dates.php met à jour ps_cart.date_add/date_upd pour ces paniers
  *
- *   FIX #B — HTTP 500 gamification non détecté :
- *     L'ancienne version vérifiait errList.length > 0 pour détecter
- *     les hooks. Mais quand le XML de réponse est mal formé ou vide,
- *     errList est vide ET il n'y a pas d'orderId → double échec.
- *     Nouvelle stratégie :
- *       1. Si HTTP 500 → toujours tenter le fallback GET /orders?filter[id_cart]
- *       2. Si la commande est trouvée → succès non bloquant
- *       3. Si introuvable après le délai → vérifier les erreurs PS réelles
- *
- *   FIX #C (hérité v4) — secure_key :
- *     La secure_key du customer est incluse dans le cart ET la commande.
- *
- *   FIX #D (hérité v4) — id_shop/id_shop_group :
- *     Tous les objets créés ont id_shop=1 et id_shop_group=1.
- *
- *   NOTE STOCK :
- *     POST /orders via l'API WS ne décrémente pas le stock.
- *     La décrémentation est faite via l'endpoint custom /presta/index.php
- *     (module stockajax, même endpoint que StockPage.jsx).
+ * CORRECTIONS héritées (v5) :
+ *   FIX #A — ps_cart_product : PUT /carts/:id après POST /carts
+ *   FIX #B — HTTP 500 gamification : fallback GET /orders?filter[id_cart]
+ *   FIX #C — secure_key incluse dans cart + commande
+ *   FIX #D — id_shop/id_shop_group = 1 partout
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -51,10 +39,6 @@ export const ORDER_CONFIG = {
   ID_SHOP_GROUP:        1,
 };
 
-// Endpoint custom stockajax (même proxy Vite que StockPage.jsx)
-// Même endpoint que stockService.js (fichier standalone PHP).
-// NE PAS utiliser le module stockajax (/presta/index.php?fc=module&module=stockajax)
-// car il peut être bloqué par le mode maintenance de PS.
 const STOCK_ENDPOINT = '/updatestock';
 
 // ─── Parser pour les réponses (y compris les 500) ─────────────
@@ -89,27 +73,6 @@ function extraireId(reponse, ressource) {
 
 // ─── POST /orders avec gestion robuste HTTP 500 ───────────────
 
-/**
- * FIX #B — Stratégie robuste pour POST /orders :
- *
- * Le module gamification de PS8 déclenche un hook deprecated lors de
- * la création de commande, ce qui provoque un HTTP 500.
- * Mais la commande EST bien insérée en base malgré le 500.
- *
- * Ancienne approche (fragile) : parser les codes d'erreur PS (code=15)
- *   → Échoue si le XML de réponse est vide ou mal formé.
- *
- * Nouvelle approche (robuste) :
- *   1. POST /orders
- *   2. Si HTTP 200 → extraire l'id normalement
- *   3. Si HTTP 500 → attendre 800ms puis GET /orders?filter[id_cart]=X
- *      → Si trouvé : la commande existe bien, on retourne son id
- *      → Si pas trouvé : analyser les erreurs PS pour donner un message clair
- *
- * @param {string} xmlBody
- * @param {number} idCart
- * @returns {Promise<number>} orderId
- */
 async function postOrder(xmlBody, idCart) {
   const res = await fetch('/api/orders', {
     method: 'POST',
@@ -123,26 +86,17 @@ async function postOrder(xmlBody, idCart) {
 
   const xmlText = await res.text();
 
-  // ── Cas nominal : HTTP 200 ────────────────────────────────
   if (res.ok) {
     let parsed = {};
     try { parsed = errorParser.parse(xmlText)?.prestashop || {}; } catch (_) {}
-
-    // Chercher l'id dans la réponse
     const id = extraireId(parsed, 'order');
     if (id) return id;
-
-    // Parfois PS retourne 200 mais sans ID dans la réponse XML
-    // (peut arriver selon la version) → fallback GET
     await new Promise((r) => setTimeout(r, 400));
     return fallbackGetOrderByCart(idCart, 'HTTP 200 sans ID dans la réponse');
   }
 
-  // ── Cas HTTP 500 ──────────────────────────────────────────
-  // Stratégie : toujours tenter le fallback d'abord,
-  // car PS insère souvent la commande malgré le 500 (hook gamification).
   console.warn(`[postOrder] HTTP 500 pour cart=${idCart} — tentative fallback GET…`);
-  await new Promise((r) => setTimeout(r, 800)); // laisser PS finir l'écriture
+  await new Promise((r) => setTimeout(r, 800));
 
   try {
     const idTrouve = await fallbackGetOrderByCart(idCart, null);
@@ -150,39 +104,22 @@ async function postOrder(xmlBody, idCart) {
       console.warn(`[postOrder] Commande retrouvée via fallback : id=${idTrouve} (hook gamification ignoré)`);
       return idTrouve;
     }
-  } catch (_) {
-    // fallback échoué → analyser l'erreur PS
-  }
+  } catch (_) {}
 
-  // Le fallback n'a rien trouvé → c'est une vraie erreur
-  // Analyser le XML d'erreur pour donner un message utile
   let msgErreur = `HTTP 500 — commande introuvable après fallback (cart=${idCart})`;
   try {
     const parsed  = errorParser.parse(xmlText)?.prestashop || {};
     const errors  = parsed?.errors?.error || [];
     const errList = Array.isArray(errors) ? errors : [errors];
-    const msgs    = errList
-      .map((e) => extraireVal(e?.message))
-      .filter(Boolean);
+    const msgs    = errList.map((e) => extraireVal(e?.message)).filter(Boolean);
     if (msgs.length) msgErreur = `HTTP 500: ${msgs.join('; ')}`;
   } catch (_) {
-    // XML non parseable
-    if (xmlText.length > 0) {
-      msgErreur = `HTTP 500: ${xmlText.slice(0, 200)}`;
-    }
+    if (xmlText.length > 0) msgErreur = `HTTP 500: ${xmlText.slice(0, 200)}`;
   }
 
   throw new Error(msgErreur);
 }
 
-/**
- * Cherche une commande par son id_cart via GET.
- * Utilisé en fallback quand POST /orders retourne 500.
- *
- * @param {number} idCart
- * @param {string|null} contexteErreur - message à inclure si non trouvé
- * @returns {Promise<number>} orderId
- */
 async function fallbackGetOrderByCart(idCart, contexteErreur) {
   const fb     = await prestaGet(`/orders?filter[id_cart]=${idCart}&display=full`);
   const orders = fb.orders?.order || [];
@@ -252,7 +189,6 @@ async function creerCustomer(commande) {
   const id  = extraireId(res, 'customer');
   if (!id) throw new Error(`Customer non créé pour "${commande.email}"`);
 
-  // Récupérer la secure_key fraîchement générée par PS
   const detail    = await prestaGet(`/customers/${id}`);
   const cust      = detail.customer?.[0] || detail.customer;
   const secureKey = extraireVal(cust?.secure_key);
@@ -335,18 +271,17 @@ async function chargerProduits() {
 async function chargerCombinaisonsProduit(idProduit, log) {
   const map = new Map();
 
-  const dataCombis  = await prestaGet(
+  const dataCombis = await prestaGet(
     `/combinations?filter[id_product]=${idProduit}&display=full`
   );
   const brutsCombis = dataCombis.combinations?.combination || [];
   const listeCombis = Array.isArray(brutsCombis) ? brutsCombis : [brutsCombis];
   if (!listeCombis.length) return map;
 
-  const dataVals  = await prestaGet('/product_option_values?display=full');
+  const dataVals = await prestaGet('/product_option_values?display=full');
   const brutsVals = dataVals.product_option_values?.product_option_value || [];
   const listeVals = Array.isArray(brutsVals) ? brutsVals : [brutsVals];
 
-  // Construire labelParId avec labels PS + aliases malgaches
   const labelParId = new Map();
   for (const v of listeVals) {
     const id = Number(extraireVal(v.id));
@@ -364,7 +299,6 @@ async function chargerCombinaisonsProduit(idProduit, log) {
       if (t) labels.add(t);
     }
 
-    // Ajouter les alias malgaches correspondants
     for (const label of [...labels]) {
       const alias = TRADUCTION_INVERSE[label];
       if (alias) labels.add(alias);
@@ -373,15 +307,6 @@ async function chargerCombinaisonsProduit(idProduit, log) {
     labelParId.set(id, labels);
   }
 
-  // Index inversé : label → optionValueId
-  const nomParId = new Map();
-  for (const [id, labels] of labelParId) {
-    for (const label of labels) {
-      if (!nomParId.has(label)) nomParId.set(label, id);
-    }
-  }
-
-  // Construire la Map finale : label → { idCombi, supplementHT }
   for (const combi of listeCombis) {
     const idCombi      = Number(extraireVal(combi.id));
     const supplementHT = parseFloat(extraireVal(combi.price) || '0');
@@ -390,20 +315,19 @@ async function chargerCombinaisonsProduit(idProduit, log) {
     if (!optsRaw) continue;
     const opts = Array.isArray(optsRaw) ? optsRaw : [optsRaw];
 
+    const labelsCombi = [];
     for (const opt of opts) {
       const idVal = Number(extraireVal(opt.id));
       if (!idVal) continue;
-
-      const labelsDeceVal = [...nomParId.entries()]
-        .filter(([, vid]) => vid === idVal)
-        .map(([label]) => label);
-
-      for (const label of labelsDeceVal) {
+      const labelsSet = labelParId.get(idVal);
+      if (!labelsSet) continue;
+      for (const label of labelsSet) {
         map.set(label, { idCombi, supplementHT });
+        labelsCombi.push(label);
       }
-
-      log('info', `  Combi id=${idCombi} → [${labelsDeceVal.join(' | ')}]`);
     }
+
+    log('info', `  Combi id=${idCombi} → [${labelsCombi.join(' | ')}]`);
   }
 
   return map;
@@ -411,24 +335,7 @@ async function chargerCombinaisonsProduit(idProduit, log) {
 
 // ─── ÉTAPE 4 : Cart + cart_rows ──────────────────────────────
 
-/**
- * FIX #A — Création du cart AVEC ses produits.
- *
- * L'API PrestaShop crée le cart vide via POST /carts.
- * Pour insérer les produits dans ps_cart_product, il faut ensuite
- * faire un PUT /carts/:id avec les associations cart_rows.
- *
- * Sans ce PUT, ps_cart_product reste vide → POST /orders échoue
- * avec "No product in cart" (HTTP 500).
- *
- * @param {number}   idCustomer
- * @param {number}   idAdresse
- * @param {string}   secureKey
- * @param {Array}    lignesResolues  - articles résolus avec idProduit, idCombi, quantite
- * @returns {Promise<number>} idCart
- */
 async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesResolues) {
-  // ── Étape 4a : Créer le cart vide ────────────────────────
   const xmlCart = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <cart>
@@ -454,9 +361,6 @@ async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesRes
   const idCart  = extraireId(resCart, 'cart');
   if (!idCart) throw new Error('Cart non créé (pas d\'ID dans la réponse)');
 
-  // ── Étape 4b : Insérer les produits via PUT /carts/:id ───
-  // PS attend les cart_rows dans les associations.
-  // Chaque row a : id_product, id_product_attribute, quantity, id_address_delivery
   const cartRowsXml = lignesResolues.map((ligne) => `
       <cart_row>
         <id_product><![CDATA[${ligne.idProduit}]]></id_product>
@@ -519,9 +423,16 @@ async function creerCommande({
 }) {
   const { totalHT, totalTTC } = calculerTotaux(lignesResolues);
 
-  // IMPORTANT : ne pas inclure les order_rows dans le XML.
-  // PS les calcule lui-même depuis ps_cart_product (FIX #A).
-  // Les envoyer provoque un HTTP 500 sur certaines versions PS8.
+  let dateFormatee = dateCommande;
+  if (!dateFormatee || !/^\d{4}-\d{2}-\d{2}$/.test(dateFormatee)) {
+    console.warn(`[creerCommande] Date invalide: "${dateCommande}" — utilisation de la date du jour`);
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    dateFormatee = `${yyyy}-${mm}-${dd}`;
+  }
+
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <order>
@@ -541,8 +452,8 @@ async function creerCommande({
     <delivery_number><![CDATA[0]]></delivery_number>
     <delivery_date><![CDATA[0000-00-00 00:00:00]]></delivery_date>
     <valid><![CDATA[1]]></valid>
-    <date_add><![CDATA[${dateCommande} 00:00:00]]></date_add>
-    <date_upd><![CDATA[${dateCommande} 00:00:00]]></date_upd>
+    <date_add><![CDATA[${dateFormatee} 00:00:00]]></date_add>
+    <date_upd><![CDATA[${dateFormatee} 00:00:00]]></date_upd>
     <shipping_number><![CDATA[]]></shipping_number>
     <note><![CDATA[]]></note>
     <recyclable><![CDATA[0]]></recyclable>
@@ -595,26 +506,8 @@ async function ajouterEtatCommande(idOrder, idOrderState) {
 
 // ─── ÉTAPE 7 : Décrémentation stock via endpoint custom ───────
 
-/**
- * Décrémente le stock via l'endpoint custom stockajax.
- * Passe un delta négatif (ex: -3 pour retirer 3 unités).
- *
- * Réutilise le même endpoint que StockPage.jsx (mode delta).
- */
-/**
- * Décrémente le stock via /updatestock (même logique que stockService.applyStockDelta).
- *
- * Utilise le fichier standalone /updatestock (hors index PS, donc compatible
- * avec le mode maintenance) et non le module stockajax.
- *
- * @param {number} idProduit
- * @param {number} idCombi    - 0 si produit simple, ID PS si combinaison
- * @param {number} quantite   - quantité commandée (positive, on la rend négative ici)
- */
 async function decrementerStock(idProduit, idCombi, quantite, registerOnly = false) {
-  // Normaliser : s'assurer que idCombi est bien un entier (0 si simple)
   const attrId = parseInt(idCombi, 10) || 0;
-  // CORRECT : delta négatif pour soustraire (updateQuantity fait quantity += delta)
   const delta  = -quantite;
 
   const res = await fetch(STOCK_ENDPOINT, {
@@ -624,11 +517,10 @@ async function decrementerStock(idProduit, idCombi, quantite, registerOnly = fal
       id_product:           Number(idProduit),
       id_product_attribute: attrId,
       delta,
-      register_only:        registerOnly,  // ← Enregistrer seulement, sans modifier le stock
+      register_only:        registerOnly,
     }),
   });
 
-  // Lire en texte d'abord pour diagnostiquer une réponse HTML (maintenance PS)
   const text    = await res.text();
   const trimmed = text.trim();
 
@@ -665,6 +557,8 @@ export async function importerCommandes(commandes, onLog) {
     skips:             0,
     erreurs:           0,
     details:           [],
+    dateCorrections:   [], // { idOrder, idCart, date } — commandes avec état
+    cartCorrections:   [], // { idCart, date }           — paniers sans commande (FIX #E)
   };
 
   // ── Pré-chargement produits ───────────────────────────────
@@ -705,13 +599,11 @@ export async function importerCommandes(commandes, onLog) {
     throw err;
   }
 
-  // Injecter le taux TVA dans chaque produit
   for (const [ref, produit] of produitsMap) {
     produit.taxRate = tauxParGroupe.get(produit.idTaxGroup) ?? 0;
     produitsMap.set(ref, produit);
   }
 
-  // Cache combinaisons par id produit (évite re-fetch)
   const combiCache = new Map();
 
   log('info', `Début import — ${commandes.length} commande(s) à traiter`);
@@ -765,7 +657,6 @@ export async function importerCommandes(commandes, onLog) {
       for (const article of commande.articles) {
         const produit = produitsMap.get(article.reference);
         if (!produit) {
-          // Lister les références disponibles pour aider au diagnostic
           const refsDispos = [...produitsMap.keys()].slice(0, 10).join(', ');
           log('erreur',
             `Produit "${article.reference}" introuvable dans PS (refs connues : ${refsDispos}…)`,
@@ -779,7 +670,6 @@ export async function importerCommandes(commandes, onLog) {
         let supplementHT = 0;
 
         if (article.variante) {
-          // Charger les combinaisons si pas encore en cache
           if (!combiCache.has(produit.id)) {
             log('info', `Chargement combinaisons produit id=${produit.id}…`, ref);
             const combis = await chargerCombinaisonsProduit(
@@ -831,19 +721,37 @@ export async function importerCommandes(commandes, onLog) {
         continue;
       }
 
+      // Agréger les doublons (même produit+combi) avant de créer le cart
+      const lignesAgregees = [];
+      const indexAgregation = new Map();
+      for (const ligne of lignesResolues) {
+        const cle = `${ligne.idProduit}:${ligne.idCombi}`;
+        if (indexAgregation.has(cle)) {
+          const existant = lignesAgregees[indexAgregation.get(cle)];
+          existant.quantite += ligne.quantite;
+        } else {
+          indexAgregation.set(cle, lignesAgregees.length);
+          lignesAgregees.push({ ...ligne });
+        }
+      }
+
       // ── 4. Cart + insertion produits ────────────────────
-      // POST /carts (vide) + PUT /carts/:id (avec cart_rows)
       const idCart = await creerCartAvecProduits(
-        idCustomer, idAdresse, secureKey, lignesResolues
+        idCustomer, idAdresse, secureKey, lignesAgregees
       );
       log('succes', `Cart créé avec produits : id=${idCart}`, ref);
 
-      // ── FIX 1 : état vide → panier abandonné, pas d'order ─
-      // Si etat est vide dans le CSV, on s'arrête ici.
-      // Le cart existe dans ps_cart + ps_cart_product, visible
-      // dans le backoffice React comme "panier abandonné".
+      // ── FIX #E : panier abandonné (état vide) ───────────
+      // Stocker l'idCart dans cartCorrections pour correction de date en base.
       if (!commande.etatPS) {
         log('info', `État vide → panier abandonné conservé (pas de commande créée)`, ref);
+
+        // FIX #E : enregistrer pour correction SQL
+        bilan.cartCorrections.push({
+          idCart,
+          date: commande.date,
+        });
+
         bilan.paniers = (bilan.paniers || 0) + 1;
         bilan.details.push({
           ref,
@@ -857,6 +765,7 @@ export async function importerCommandes(commandes, onLog) {
       }
 
       // ── 5. Commande (fallback robuste HTTP 500) ──────────
+      log('info', `[DEBUG] dateCommande reçue : "${commande.date}"`, ref);
       const idOrder = await creerCommande({
         idCustomer, idAdresse, idCart, secureKey,
         dateCommande:  commande.date,
@@ -874,17 +783,13 @@ export async function importerCommandes(commandes, onLog) {
       }
 
       // ── 7. Décrémentation stock ──────────────────────────
-      // PrestaShop décrémente automatiquement le stock (parent + combis)
-      // lors de la création de la commande via l'API POST /orders.
-      // On appelle juste l'endpoint pour ENREGISTRER le mouvement (register_only: true)
-      // sans modifier le stock une deuxième fois.
       log('info', `[DEBUG] lignesResolues avant décrémentation: ${JSON.stringify(lignesResolues.map(l => ({ref: l.reference, qty: l.quantite, idCombi: l.idCombi})))}`, ref);
-      
+
       for (const ligne of lignesResolues) {
         try {
           log('info', `[DEBUG] Enregistrement mouvement stock: ${ligne.reference} × ${ligne.quantite} (id_product=${ligne.idProduit}, id_combi=${ligne.idCombi})`, ref);
           const result = await decrementerStock(
-            ligne.idProduit, ligne.idCombi, ligne.quantite, true  // ← register_only: true
+            ligne.idProduit, ligne.idCombi, ligne.quantite, true
           );
           log('info',
             `Mouvement "${ligne.reference}" enregistré (qty actuelle: ${result.newQty})`,
@@ -899,6 +804,13 @@ export async function importerCommandes(commandes, onLog) {
         `✓ Commande ${commande.email} (${commande.date}) importée — id=${idOrder}`,
         ref
       );
+
+      bilan.dateCorrections.push({
+        idOrder,
+        idCart,
+        date: commande.date,
+      });
+
       bilan.crees++;
       bilan.details.push({
         ref,
@@ -915,6 +827,57 @@ export async function importerCommandes(commandes, onLog) {
       bilan.details.push({
         ref, statut: 'erreur', raison: err.message, email: commande.email,
       });
+    }
+  }
+
+  // ── Correction des dates en base de données ───────────────────
+  // Envoie en un seul appel :
+  //   "corrections" → commandes (ps_orders + ps_cart + ps_order_history)
+  //   "cartOnly"    → paniers sans commande (ps_cart uniquement) — FIX #E
+  const hasCorrections = bilan.dateCorrections.length > 0;
+  const hasCartOnly    = bilan.cartCorrections.length > 0;
+
+  if (hasCorrections || hasCartOnly) {
+    try {
+      const totalACorrigerLog = [];
+      if (hasCorrections) totalACorrigerLog.push(`${bilan.dateCorrections.length} commande(s)`);
+      if (hasCartOnly)    totalACorrigerLog.push(`${bilan.cartCorrections.length} panier(s)`);
+      log('info', `Correction des dates en base : ${totalACorrigerLog.join(' + ')}`);
+
+      const response = await fetch('/fix-import-dates', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          // Commandes avec état → met à jour ps_orders + ps_cart + ps_order_history
+          corrections: bilan.dateCorrections.map(c => ({
+            idOrder: c.idOrder,
+            idCart:  c.idCart,
+            dateISO: c.date,
+          })),
+          // Paniers sans commande → met à jour ps_cart uniquement (FIX #E)
+          cartOnly: bilan.cartCorrections.map(c => ({
+            idCart:  c.idCart,
+            dateISO: c.date,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text}`);
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        log('succes',
+          `✓ ${result.corrected} commande(s) + ${result.correctedCarts} panier(s) corrigé(s) en base`
+        );
+      } else {
+        const errDetail = result.errors?.join(', ') || 'Erreur inconnue';
+        log('warning', `Correction partielle : ${result.message} — ${errDetail}`);
+      }
+    } catch (err) {
+      log('erreur', `⚠️  Impossible de corriger les dates : ${err.message}`);
     }
   }
 

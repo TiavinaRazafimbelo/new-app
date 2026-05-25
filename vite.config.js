@@ -46,6 +46,16 @@ export default {
           ),
       },
 
+      // ── Correction des dates après import ─────────────────
+      // POST /fix-import-dates { corrections: [{idOrder, idCart, dateISO}] }
+      // → fix-import-dates.php à la racine de PrestaShop
+      '/fix-import-dates': {
+        target: 'http://localhost/prestashop_edition_classic_version_8.2.6',
+        changeOrigin: true,
+        rewrite: (path) =>
+          path.replace(/^\/fix-import-dates/, '/fix-import-dates.php'),
+      },
+
     },
   },
   build: {

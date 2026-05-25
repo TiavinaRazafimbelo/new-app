@@ -40,13 +40,17 @@ function convertirDate(dateStr) {
   const match = dateStr.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (!match) return null;
   const [, jour, mois, annee] = match;
-  const d = new Date(`${annee}-${mois}-${jour}T00:00:00`);
-  if (
-    isNaN(d.getTime()) ||
-    d.getDate()      !== parseInt(jour,  10) ||
-    d.getMonth() + 1 !== parseInt(mois,  10) ||
-    d.getFullYear()  !== parseInt(annee, 10)
-  ) return null;
+  
+  // Validation simple : vérifier que jour, mois, annee sont dans les bonnes limites
+  const dayNum = parseInt(jour, 10);
+  const monthNum = parseInt(mois, 10);
+  const yearNum = parseInt(annee, 10);
+  
+  if (monthNum < 1 || monthNum > 12) return null;
+  if (dayNum < 1 || dayNum > 31) return null;
+  if (yearNum < 1900 || yearNum > 2099) return null;
+  
+  // Retourner au format ISO : YYYY-MM-DD
   return `${annee}-${mois}-${jour}`;
 }
 
@@ -200,6 +204,7 @@ export function parseCSVCommandes(contenuCSV) {
     let ok = true;
 
     const dateISO = convertirDate(dateRaw);
+    console.log(`[parseCSVCommandes] Ligne ${numLigne}: dateRaw="${dateRaw}" → dateISO="${dateISO}"`);
     if (!dateISO) {
       result.avertissements.push({ ligne: numLigne, ref: email, type: 'erreur',
         message: `Date invalide : "${dateRaw}" — attendu DD/MM/YYYY` });

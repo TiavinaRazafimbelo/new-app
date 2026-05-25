@@ -182,6 +182,41 @@ async function trouverStockAvailableId(idProduit, idCombi = 0) {
   }
 }
 
+async function trouverOuCreerStockAvailableId(idProduit, idCombi = 0) {
+  // Essai 1
+  let idStock = await trouverStockAvailableId(idProduit, idCombi);
+  if (idStock) return idStock;
+
+  // Attendre et réessayer (PS peut être lent à créer la ligne)
+  await new Promise(r => setTimeout(r, 500));
+  idStock = await trouverStockAvailableId(idProduit, idCombi);
+  if (idStock) return idStock;
+
+  // Créer la ligne stock_available si elle n'existe pas
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
+  <stock_available>
+    <id_product>${idProduit}</id_product>
+    <id_product_attribute>${idCombi}</id_product_attribute>
+    <id_shop>${ID_SHOP}</id_shop>
+    <id_shop_group>${ID_SHOP_GROUP}</id_shop_group>
+    <quantity>0</quantity>
+    <depends_on_stock>0</depends_on_stock>
+    <out_of_stock>2</out_of_stock>
+  </stock_available>
+</prestashop>`;
+
+  try {
+    const res = await prestaWrite('/stock_availables', xml, 'POST');
+    const id  = Number(extraireVal(res.stock_available?.id ?? res.stock_availables?.stock_available?.id ?? 0));
+    if (id) return id;
+  } catch (_) {}
+
+  // Dernier essai après création
+  await new Promise(r => setTimeout(r, 300));
+  return await trouverStockAvailableId(idProduit, idCombi);
+}
+
 // ─── Mise à jour stock_available ─────────────────────────────
 
 async function mettreAJourStock(idStock, idProduit, idCombi, quantite) {
@@ -369,7 +404,7 @@ export async function importerCombinations(lignes, onLog) {
     if (mode === 'simple') {
       try {
         log('info', `"${reference}" : produit simple — stock → ${ligne.stockInitial}`, reference);
-        const idStock = await trouverStockAvailableId(produit.id, 0);
+        const idStock = await trouverOuCreerStockAvailableId(produit.id, 0);
         if (!idStock) throw new Error(`stock_available introuvable pour produit ${produit.id}`);
         await mettreAJourStock(idStock, produit.id, 0, ligne.stockInitial);
         log('succes', `"${reference}" : stock initialisé → ${ligne.stockInitial} unités`, reference);

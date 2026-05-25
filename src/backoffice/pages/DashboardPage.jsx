@@ -31,10 +31,10 @@ function dateEnFR(iso)   {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
+function estComptabilisee(c) { return Number(c.current_state) === STATUT_PAIEMENT_EFFECTUE; }
 function montantFR(v) {
   return Number(v || 0).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
 }
-function estComptabilisee(c) { return Number(c.current_state) === STATUT_PAIEMENT_EFFECTUE; }
 
 // ─── Sous-composants ──────────────────────────────────────────
 
