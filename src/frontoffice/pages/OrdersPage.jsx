@@ -15,7 +15,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useFrontofficeClient } from '../contexts/FrontofficeClientContext';
-import { getCustomerOrders, getOrderStates } from '../services/orderService';
+import { getCustomerOrders, getOrderStates, duplicateOrder } from '../services/orderService';
 import TopBar from '../components/TopBar';
 import './OrdersPage.css';
 
@@ -41,7 +41,7 @@ function BadgeEtat({ stateId, states }) {
 
 // ─── Carte commande ───────────────────────────────────────────
 
-function CarteCommande({ order, states, defaultExpanded }) {
+function CarteCommande({ order, states, defaultExpanded, onDuplicate }) {
   const [expanded, setExpanded] = useState(defaultExpanded || false);
 
   return (
@@ -107,6 +107,17 @@ function CarteCommande({ order, states, defaultExpanded }) {
           <div className="order-paiement">
             Mode de paiement : <strong>{order.payment || '—'}</strong>
           </div>
+
+          {/* Bouton dupliquer */}
+          <div className="order-actions">
+            <button
+              className="btn-duplicate"
+              onClick={() => onDuplicate(order)}
+              title="Dupliquer cette commande"
+            >
+               Dupliquer
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -119,10 +130,16 @@ const OrdersPage = () => {
   const navigate = useNavigate();
   const { client } = useFrontofficeClient();
 
-  const [orders,   setOrders]   = useState([]);
-  const [states,   setStates]   = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [erreur,   setErreur]   = useState(null);
+  const [orders,              setOrders]              = useState([]);
+  const [states,              setStates]              = useState([]);
+  const [loading,             setLoading]             = useState(true);
+  const [erreur,              setErreur]              = useState(null);
+  const [showDuplicateModal,  setShowDuplicateModal]  = useState(false);
+  const [selectedOrder,       setSelectedOrder]       = useState(null);
+  const [duplicateCount,      setDuplicateCount]      = useState(1);
+  const [duplicating,         setDuplicating]         = useState(false);
+  const [duplicateError,      setDuplicateError]      = useState(null);
+  const [duplicateSuccess,    setDuplicateSuccess]    = useState(false);
 
   // Garde : client non connecté → login
   useEffect(() => {
@@ -151,6 +168,57 @@ const OrdersPage = () => {
       })
       .finally(() => setLoading(false));
   }, [client]);
+
+  // ── Fonctions duplication ──────────────────────────────────
+
+  const handleOpenDuplicateModal = (order) => {
+    setSelectedOrder(order);
+    setDuplicateCount(1);
+    setDuplicateError(null);
+    setDuplicateSuccess(false);
+    setShowDuplicateModal(true);
+  };
+
+  const handleCloseDuplicateModal = () => {
+    setShowDuplicateModal(false);
+    setSelectedOrder(null);
+    setDuplicateCount(1);
+    setDuplicateError(null);
+    setDuplicateSuccess(false);
+  };
+
+  const handleExecuteDuplicate = async () => {
+    if (!selectedOrder || !client) return;
+
+    setDuplicating(true);
+    setDuplicateError(null);
+    setDuplicateSuccess(false);
+
+    try {
+      const result = await duplicateOrder(
+        selectedOrder,
+        client.id,
+        duplicateCount
+      );
+      
+      console.log('[OrdersPage] Commande dupliquée :', result);
+      setDuplicateSuccess(true);
+      
+      // Fermer le modal après 2 secondes et recharger les commandes
+      setTimeout(() => {
+        handleCloseDuplicateModal();
+        // Recharger la liste des commandes
+        getCustomerOrders(client.id).then((ordersData) => {
+          setOrders(ordersData);
+        });
+      }, 2000);
+    } catch (err) {
+      console.error('[handleExecuteDuplicate]', err);
+      setDuplicateError(err.message || 'Erreur lors de la duplication');
+    } finally {
+      setDuplicating(false);
+    }
+  };
 
   // ── Rendu ──────────────────────────────────────────────────
 
@@ -206,6 +274,7 @@ const OrdersPage = () => {
                 order={order}
                 states={states}
                 defaultExpanded={i === 0} // Première commande ouverte par défaut
+                onDuplicate={handleOpenDuplicateModal}
               />
             ))}
           </div>
@@ -217,6 +286,106 @@ const OrdersPage = () => {
         </div>
 
       </div>
+
+      {/* Modal Duplication */}
+      {showDuplicateModal && (
+        <div className="modal-overlay" onClick={handleCloseDuplicateModal}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Dupliquer la commande #{selectedOrder?.id}</h2>
+              <button className="modal-close" onClick={handleCloseDuplicateModal}>✕</button>
+            </div>
+
+            <div className="modal-body">
+              {duplicateSuccess ? (
+                <div className="modal-success">
+                  <div className="success-icon">✓</div>
+                  <p>Commande dupliquée avec succès !</p>
+                </div>
+              ) : (
+                <>
+                  <p className="modal-description">
+                    Combien de fois voulez-vous dupliquer cette commande ?
+                  </p>
+
+                  {selectedOrder?.rows && (
+                    <div className="duplicate-preview">
+                      <p className="preview-title">Aperçu des articles :</p>
+                      <ul className="preview-list">
+                        {selectedOrder.rows.map((row, i) => (
+                          <li key={i}>
+                            <span>{row.productName}</span>
+                            <span className="preview-qty">
+                              {row.quantity} × {duplicateCount} = {row.quantity * duplicateCount}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="modal-input-group">
+                    <label htmlFor="duplicateCount">Nombre de duplication :</label>
+                    <div className="input-spinner">
+                      <button
+                        className="spinner-btn"
+                        onClick={() => setDuplicateCount(Math.max(1, duplicateCount - 1))}
+                        disabled={duplicating}
+                      >
+                        −
+                      </button>
+                      <input
+                        id="duplicateCount"
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={duplicateCount}
+                        onChange={(e) => {
+                          const val = Math.max(1, Math.min(10, Number(e.target.value) || 1));
+                          setDuplicateCount(val);
+                        }}
+                        disabled={duplicating}
+                      />
+                      <button
+                        className="spinner-btn"
+                        onClick={() => setDuplicateCount(Math.min(10, duplicateCount + 1))}
+                        disabled={duplicating}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  {duplicateError && (
+                    <div className="modal-error">
+                      <span>⚠</span> {duplicateError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {!duplicateSuccess && (
+              <div className="modal-footer">
+                <button
+                  className="btn-secondary"
+                  onClick={handleCloseDuplicateModal}
+                  disabled={duplicating}
+                >
+                  Annuler
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={handleExecuteDuplicate}
+                  disabled={duplicating}
+                >
+                  {duplicating ? 'Duplication en cours...' : 'Dupliquer'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 };

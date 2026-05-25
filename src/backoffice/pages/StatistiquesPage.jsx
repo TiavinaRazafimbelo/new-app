@@ -20,7 +20,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { getStatistiques, getStockParCategorie } from '../services/commandesService';
+import { getStatistiques} from '../services/commandesService';
 import './StatistiquesPage.css';
 
 // ─── Formatage ────────────────────────────────────────────────
@@ -145,74 +145,11 @@ function TableauVentes({ stats, totaux }) {
   );
 }
 
-// ─── Tableau stock ────────────────────────────────────────────
-
-function TableauStock({ stock }) {
-  if (!stock.length) {
-    return (
-      <div className="stats-vide">
-        <span>📦</span>
-        <p>Aucune donnée de stock disponible.</p>
-      </div>
-    );
-  }
-
-  const totalPhysique   = stock.reduce((s, r) => s + r.qtyPhysique,   0);
-  const totalReservee   = stock.reduce((s, r) => s + r.qtyReservee,   0);
-  const totalDisponible = stock.reduce((s, r) => s + r.qtyDisponible, 0);
-
-  return (
-    <div className="stats-tableau-wrapper">
-      <table className="stats-table stats-table--stock">
-        <thead>
-          <tr>
-            <th className="col-cat">Catégorie</th>
-            <th className="col-qty col-qty--physique">Qté physique</th>
-            <th className="col-qty col-qty--reserve">Qté réservée</th>
-            <th className="col-qty col-qty--dispo">Qté disponible</th>
-          </tr>
-        </thead>
-        <tbody>
-          {stock.map((r) => (
-            <tr key={r.idCategorie} className="stats-row">
-              <td className="col-cat">
-                <span className="cat-label">{r.nomCategorie}</span>
-              </td>
-              <td className="col-qty">
-                <span className="qty-pill qty-pill--physique">{r.qtyPhysique}</span>
-              </td>
-              <td className="col-qty">
-                {r.qtyReservee > 0
-                  ? <span className="qty-pill qty-pill--reserve">{r.qtyReservee}</span>
-                  : <span className="qty-zero">—</span>
-                }
-              </td>
-              <td className="col-qty">
-                <span className={`qty-pill qty-pill--dispo ${r.qtyDisponible === 0 ? 'qty-pill--rupture' : ''}`}>
-                  {r.qtyDisponible}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr className="stats-row stats-row--total">
-            <td className="col-cat"><strong>TOTAL</strong></td>
-            <td className="col-qty"><strong>{totalPhysique}</strong></td>
-            <td className="col-qty"><strong>{totalReservee}</strong></td>
-            <td className="col-qty"><strong>{totalDisponible}</strong></td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
-  );
-}
 
 // ─── Composant principal ──────────────────────────────────────
 
 export default function StatistiquesPage() {
   const [statsData,    setStatsData]    = useState(null);
-  const [stockData,    setStockData]    = useState(null);
   const [chargement,   setChargement]   = useState(true);
   const [erreur,       setErreur]       = useState(null);
 
@@ -220,12 +157,10 @@ export default function StatistiquesPage() {
     setChargement(true);
     setErreur(null);
     try {
-      const [stats, stock] = await Promise.all([
+      const [stats] = await Promise.all([
         getStatistiques(),
-        getStockParCategorie(),
       ]);
       setStatsData(stats);
-      setStockData(stock);
     } catch (err) {
       setErreur(err.message);
     } finally {
@@ -277,7 +212,7 @@ export default function StatistiquesPage() {
       )}
 
       {/* ── Contenu ─────────────────────────────────────────── */}
-      {!chargement && !erreur && statsData && stockData && (
+      {!chargement && !erreur && statsData && (
         <>
           {/* ── KPI globaux ──────────────────────────────────── */}
           <div className="kpi-grille">
@@ -325,16 +260,6 @@ export default function StatistiquesPage() {
             />
           </section>
 
-          {/* ── Section stock ────────────────────────────────── */}
-          <section className="stats-section">
-            <div className="stats-section__entete">
-              <h3 className="stats-section__titre">Stock par catégorie</h3>
-              <span className="stats-section__hint">
-                Qté réservée = articles dans des paniers actifs non commandés
-              </span>
-            </div>
-            <TableauStock stock={stockData} />
-          </section>
         </>
       )}
     </div>

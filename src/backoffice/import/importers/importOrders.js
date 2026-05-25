@@ -1,35 +1,35 @@
 /**
- * importOrders.js — v6
+ * importOrders.js — v5
  * src/backoffice/import/importers/importOrders.js
  * ─────────────────────────────────────────────────────────────
- * CORRECTIFS v6 :
+ * CORRECTIONS v5 :
  *
- *   FIX #1 — etat vide = panier uniquement (cartOnly) :
- *     Si commande.cartOnly === true, on crée le client + adresse
- *     + cart + cart_rows, mais on s'arrête là.
- *     Aucune entrée dans ps_orders, ps_order_detail, ps_order_history.
- *     Aucune décrémentation de stock.
+ *   FIX #A — ps_cart_product vide :
+ *     Après POST /carts (qui crée un cart vide), il faut faire un
+ *     PUT /carts/:id avec les associations cart_rows pour insérer
+ *     les produits dans ps_cart_product.
+ *     Sans ça, PrestaShop crée la commande mais avec 0 article,
+ *     ce qui provoque HTTP 500 "No product in cart".
  *
- *   FIX #2 — Rajao 2 commandes non enregistrées :
- *     Le problème venait de la déduplication client : après la 1ère
- *     commande de Rakoto, l'adresse était en cache. Pour la 2e commande
- *     (même email), on réutilisait l'adresse existante correctement,
- *     mais la clé du cache adresse était idCustomer (stable) donc ça
- *     fonctionnait. Le vrai bug : chercherAdresse() ne filtrait pas
- *     sur id_shop=1, PS retournait parfois l'adresse supprimée (deleted=1).
- *     Correction : filtre explicite deleted=0 dans la requête GET.
- *     De plus, on RECRÉE une adresse pour chaque commande d'un client
- *     déjà vu si son adresse CSV est différente de la précédente.
+ *   FIX #B — HTTP 500 gamification non détecté :
+ *     L'ancienne version vérifiait errList.length > 0 pour détecter
+ *     les hooks. Mais quand le XML de réponse est mal formé ou vide,
+ *     errList est vide ET il n'y a pas d'orderId → double échec.
+ *     Nouvelle stratégie :
+ *       1. Si HTTP 500 → toujours tenter le fallback GET /orders?filter[id_cart]
+ *       2. Si la commande est trouvée → succès non bloquant
+ *       3. Si introuvable après le délai → vérifier les erreurs PS réelles
  *
- *   FIX #3 — Stock endpoint incorrect :
- *     L'ancienne URL pointait sur /presta/index.php?fc=module&module=stockajax
- *     qui n'existe pas → réponse vide → "Unexpected end of JSON input".
- *     Correction : utiliser /updatestock (même endpoint que StockPage.jsx).
- *     De plus, on vérifie que la réponse est non-vide avant de parser.
+ *   FIX #C (hérité v4) — secure_key :
+ *     La secure_key du customer est incluse dans le cart ET la commande.
  *
- *   FIX #4 — Mouvements stock non enregistrés :
- *     updatestock.php insère dans ps_stock_mvt_backoffice.
- *     Le FIX #3 suffit pour que ça fonctionne.
+ *   FIX #D (hérité v4) — id_shop/id_shop_group :
+ *     Tous les objets créés ont id_shop=1 et id_shop_group=1.
+ *
+ *   NOTE STOCK :
+ *     POST /orders via l'API WS ne décrémente pas le stock.
+ *     La décrémentation est faite via l'endpoint custom /presta/index.php
+ *     (module stockajax, même endpoint que StockPage.jsx).
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -42,7 +42,8 @@ export const ORDER_CONFIG = {
   DEFAULT_ORDER_STATE:  2,
   PAYMENT_MODULE:       'ps_cashondelivery',
   PAYMENT_LABEL:        'Cash On Delivery',
-  ID_COUNTRY:           8,   // Madagascar = 72, France = 8 — adapter selon votre PS
+  SHIPPING_COST:        0,
+  ID_COUNTRY:           8,
   ID_CARRIER:           2,
   ID_LANG:              1,
   ID_CURRENCY:          1,
@@ -50,22 +51,23 @@ export const ORDER_CONFIG = {
   ID_SHOP_GROUP:        1,
 };
 
-// FIX #3 : endpoint corrigé — même que StockPage.jsx
+// Endpoint custom stockajax (même proxy Vite que StockPage.jsx)
+// Même endpoint que stockService.js (fichier standalone PHP).
+// NE PAS utiliser le module stockajax (/presta/index.php?fc=module&module=stockajax)
+// car il peut être bloqué par le mode maintenance de PS.
 const STOCK_ENDPOINT = '/updatestock';
 
-// ─── Parser pour les réponses d'erreur PS ─────────────────────
-
+// ─── Parser pour les réponses (y compris les 500) ─────────────
 const errorParser = new XMLParser({
   ignoreAttributes:    false,
   attributeNamePrefix: '@_',
   cdataPropName:       '__cdata',
   textNodeName:        '#text',
   parseAttributeValue: true,
-  isArray: (tag) => ['error', 'order', 'cart', 'customer', 'address'].includes(tag),
+  isArray: (tag) => ['error', 'order', 'cart'].includes(tag),
 });
 
 // ─── Traductions malgache ↔ français ─────────────────────────
-
 const TRADUCTION_INVERSE = {
   'grande taille': 'ngoza',
   'petite taille': 'kely',
@@ -85,8 +87,29 @@ function extraireId(reponse, ressource) {
   return 0;
 }
 
-// ─── POST /orders avec fallback robuste HTTP 500 ──────────────
+// ─── POST /orders avec gestion robuste HTTP 500 ───────────────
 
+/**
+ * FIX #B — Stratégie robuste pour POST /orders :
+ *
+ * Le module gamification de PS8 déclenche un hook deprecated lors de
+ * la création de commande, ce qui provoque un HTTP 500.
+ * Mais la commande EST bien insérée en base malgré le 500.
+ *
+ * Ancienne approche (fragile) : parser les codes d'erreur PS (code=15)
+ *   → Échoue si le XML de réponse est vide ou mal formé.
+ *
+ * Nouvelle approche (robuste) :
+ *   1. POST /orders
+ *   2. Si HTTP 200 → extraire l'id normalement
+ *   3. Si HTTP 500 → attendre 800ms puis GET /orders?filter[id_cart]=X
+ *      → Si trouvé : la commande existe bien, on retourne son id
+ *      → Si pas trouvé : analyser les erreurs PS pour donner un message clair
+ *
+ * @param {string} xmlBody
+ * @param {number} idCart
+ * @returns {Promise<number>} orderId
+ */
 async function postOrder(xmlBody, idCart) {
   const res = await fetch('/api/orders', {
     method: 'POST',
@@ -100,42 +123,66 @@ async function postOrder(xmlBody, idCart) {
 
   const xmlText = await res.text();
 
+  // ── Cas nominal : HTTP 200 ────────────────────────────────
   if (res.ok) {
     let parsed = {};
     try { parsed = errorParser.parse(xmlText)?.prestashop || {}; } catch (_) {}
+
+    // Chercher l'id dans la réponse
     const id = extraireId(parsed, 'order');
     if (id) return id;
+
+    // Parfois PS retourne 200 mais sans ID dans la réponse XML
+    // (peut arriver selon la version) → fallback GET
     await new Promise((r) => setTimeout(r, 400));
     return fallbackGetOrderByCart(idCart, 'HTTP 200 sans ID dans la réponse');
   }
 
-  // HTTP 500 — souvent causé par hook gamification PS, commande quand même créée
+  // ── Cas HTTP 500 ──────────────────────────────────────────
+  // Stratégie : toujours tenter le fallback d'abord,
+  // car PS insère souvent la commande malgré le 500 (hook gamification).
   console.warn(`[postOrder] HTTP 500 pour cart=${idCart} — tentative fallback GET…`);
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 800)); // laisser PS finir l'écriture
 
   try {
     const idTrouve = await fallbackGetOrderByCart(idCart, null);
     if (idTrouve) {
-      console.warn(`[postOrder] Commande retrouvée via fallback : id=${idTrouve}`);
+      console.warn(`[postOrder] Commande retrouvée via fallback : id=${idTrouve} (hook gamification ignoré)`);
       return idTrouve;
     }
-  } catch (_) {}
+  } catch (_) {
+    // fallback échoué → analyser l'erreur PS
+  }
 
-  // Vraie erreur — analyser le XML
+  // Le fallback n'a rien trouvé → c'est une vraie erreur
+  // Analyser le XML d'erreur pour donner un message utile
   let msgErreur = `HTTP 500 — commande introuvable après fallback (cart=${idCart})`;
   try {
     const parsed  = errorParser.parse(xmlText)?.prestashop || {};
     const errors  = parsed?.errors?.error || [];
     const errList = Array.isArray(errors) ? errors : [errors];
-    const msgs    = errList.map((e) => extraireVal(e?.message)).filter(Boolean);
+    const msgs    = errList
+      .map((e) => extraireVal(e?.message))
+      .filter(Boolean);
     if (msgs.length) msgErreur = `HTTP 500: ${msgs.join('; ')}`;
   } catch (_) {
-    if (xmlText.length > 0) msgErreur = `HTTP 500: ${xmlText.slice(0, 200)}`;
+    // XML non parseable
+    if (xmlText.length > 0) {
+      msgErreur = `HTTP 500: ${xmlText.slice(0, 200)}`;
+    }
   }
 
   throw new Error(msgErreur);
 }
 
+/**
+ * Cherche une commande par son id_cart via GET.
+ * Utilisé en fallback quand POST /orders retourne 500.
+ *
+ * @param {number} idCart
+ * @param {string|null} contexteErreur - message à inclure si non trouvé
+ * @returns {Promise<number>} orderId
+ */
 async function fallbackGetOrderByCart(idCart, contexteErreur) {
   const fb     = await prestaGet(`/orders?filter[id_cart]=${idCart}&display=full`);
   const orders = fb.orders?.order || [];
@@ -146,18 +193,25 @@ async function fallbackGetOrderByCart(idCart, contexteErreur) {
     if (id) return id;
   }
 
-  if (contexteErreur) throw new Error(`${contexteErreur} — commande introuvable via fallback cart=${idCart}`);
+  const msg = contexteErreur
+    ? `${contexteErreur} — commande introuvable via fallback cart=${idCart}`
+    : null;
+  if (msg) throw new Error(msg);
   return 0;
 }
 
-// ─── Client ───────────────────────────────────────────────────
+// ─── ÉTAPE 1 : Client ─────────────────────────────────────────
 
 async function chercherCustomer(email) {
   try {
-    const data  = await prestaGet(`/customers?filter[email]=${encodeURIComponent(email)}&display=full`);
+    const data  = await prestaGet(
+      `/customers?filter[email]=${encodeURIComponent(email)}&display=full`
+    );
     const bruts = data.customers?.customer || [];
     const liste = Array.isArray(bruts) ? bruts : [bruts];
-    const trouve = liste.find((c) => extraireVal(c.email).toLowerCase() === email.toLowerCase());
+    const trouve = liste.find(
+      (c) => extraireVal(c.email).toLowerCase() === email.toLowerCase()
+    );
     if (trouve) {
       return {
         id:        Number(extraireVal(trouve.id)),
@@ -198,6 +252,7 @@ async function creerCustomer(commande) {
   const id  = extraireId(res, 'customer');
   if (!id) throw new Error(`Customer non créé pour "${commande.email}"`);
 
+  // Récupérer la secure_key fraîchement générée par PS
   const detail    = await prestaGet(`/customers/${id}`);
   const cust      = detail.customer?.[0] || detail.customer;
   const secureKey = extraireVal(cust?.secure_key);
@@ -205,23 +260,16 @@ async function creerCustomer(commande) {
   return { id, secureKey };
 }
 
-// ─── Adresse ──────────────────────────────────────────────────
+// ─── ÉTAPE 2 : Adresse ───────────────────────────────────────
 
-/**
- * FIX #2 : filtre deleted=0 explicite + filtre id_shop=1.
- * Sans ça PS peut retourner une adresse supprimée.
- */
 async function chercherAdresse(idCustomer) {
   try {
     const data  = await prestaGet(
-      `/addresses?filter[id_customer]=${idCustomer}&filter[deleted]=0&display=full`
+      `/addresses?filter[id_customer]=${idCustomer}&display=full`
     );
     const bruts = data.addresses?.address || [];
     const liste = Array.isArray(bruts) ? bruts : [bruts];
-    const active = liste.find(
-      (a) => String(extraireVal(a.deleted)) !== '1'
-           && Number(extraireVal(a.id_customer)) === idCustomer
-    );
+    const active = liste.find((a) => String(extraireVal(a.deleted)) !== '1');
     return active ? Number(extraireVal(active.id)) : null;
   } catch {
     return null;
@@ -261,13 +309,14 @@ async function creerAdresse(idCustomer, commande) {
   return id;
 }
 
-// ─── Produits + TVA ───────────────────────────────────────────
+// ─── ÉTAPE 3 : Produits + TVA ─────────────────────────────────
 
 async function chargerProduits() {
   const data  = await prestaGet('/products?display=full');
   const bruts = data.products?.product || [];
   const liste = Array.isArray(bruts) ? bruts : [bruts];
-  const map   = new Map();
+
+  const map = new Map();
   for (const p of liste) {
     const ref = extraireVal(p.reference).trim();
     if (!ref) continue;
@@ -281,12 +330,14 @@ async function chargerProduits() {
   return map;
 }
 
-// ─── Combinaisons d'un produit ────────────────────────────────
+// ─── ÉTAPE 3b : Combinaisons ──────────────────────────────────
 
 async function chargerCombinaisonsProduit(idProduit, log) {
   const map = new Map();
 
-  const dataCombis  = await prestaGet(`/combinations?filter[id_product]=${idProduit}&display=full`);
+  const dataCombis  = await prestaGet(
+    `/combinations?filter[id_product]=${idProduit}&display=full`
+  );
   const brutsCombis = dataCombis.combinations?.combination || [];
   const listeCombis = Array.isArray(brutsCombis) ? brutsCombis : [brutsCombis];
   if (!listeCombis.length) return map;
@@ -295,11 +346,13 @@ async function chargerCombinaisonsProduit(idProduit, log) {
   const brutsVals = dataVals.product_option_values?.product_option_value || [];
   const listeVals = Array.isArray(brutsVals) ? brutsVals : [brutsVals];
 
+  // Construire labelParId avec labels PS + aliases malgaches
   const labelParId = new Map();
   for (const v of listeVals) {
     const id = Number(extraireVal(v.id));
     if (!id) continue;
     const labels = new Set();
+
     if (v.name?.language) {
       const langues = Array.isArray(v.name.language) ? v.name.language : [v.name.language];
       for (const l of langues) {
@@ -310,13 +363,17 @@ async function chargerCombinaisonsProduit(idProduit, log) {
       const t = extraireVal(v.name).toLowerCase().trim();
       if (t) labels.add(t);
     }
+
+    // Ajouter les alias malgaches correspondants
     for (const label of [...labels]) {
       const alias = TRADUCTION_INVERSE[label];
       if (alias) labels.add(alias);
     }
+
     labelParId.set(id, labels);
   }
 
+  // Index inversé : label → optionValueId
   const nomParId = new Map();
   for (const [id, labels] of labelParId) {
     for (const label of labels) {
@@ -324,22 +381,27 @@ async function chargerCombinaisonsProduit(idProduit, log) {
     }
   }
 
+  // Construire la Map finale : label → { idCombi, supplementHT }
   for (const combi of listeCombis) {
     const idCombi      = Number(extraireVal(combi.id));
     const supplementHT = parseFloat(extraireVal(combi.price) || '0');
-    const optsRaw      = combi.associations?.product_option_values?.product_option_value;
+
+    const optsRaw = combi.associations?.product_option_values?.product_option_value;
     if (!optsRaw) continue;
     const opts = Array.isArray(optsRaw) ? optsRaw : [optsRaw];
 
     for (const opt of opts) {
       const idVal = Number(extraireVal(opt.id));
       if (!idVal) continue;
+
       const labelsDeceVal = [...nomParId.entries()]
         .filter(([, vid]) => vid === idVal)
         .map(([label]) => label);
+
       for (const label of labelsDeceVal) {
         map.set(label, { idCombi, supplementHT });
       }
+
       log('info', `  Combi id=${idCombi} → [${labelsDeceVal.join(' | ')}]`);
     }
   }
@@ -347,9 +409,26 @@ async function chargerCombinaisonsProduit(idProduit, log) {
   return map;
 }
 
-// ─── Cart + cart_rows ─────────────────────────────────────────
+// ─── ÉTAPE 4 : Cart + cart_rows ──────────────────────────────
 
+/**
+ * FIX #A — Création du cart AVEC ses produits.
+ *
+ * L'API PrestaShop crée le cart vide via POST /carts.
+ * Pour insérer les produits dans ps_cart_product, il faut ensuite
+ * faire un PUT /carts/:id avec les associations cart_rows.
+ *
+ * Sans ce PUT, ps_cart_product reste vide → POST /orders échoue
+ * avec "No product in cart" (HTTP 500).
+ *
+ * @param {number}   idCustomer
+ * @param {number}   idAdresse
+ * @param {string}   secureKey
+ * @param {Array}    lignesResolues  - articles résolus avec idProduit, idCombi, quantite
+ * @returns {Promise<number>} idCart
+ */
 async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesResolues) {
+  // ── Étape 4a : Créer le cart vide ────────────────────────
   const xmlCart = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <cart>
@@ -373,8 +452,11 @@ async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesRes
 
   const resCart = await prestaWrite('/carts', xmlCart, 'POST');
   const idCart  = extraireId(resCart, 'cart');
-  if (!idCart) throw new Error("Cart non créé (pas d'ID dans la réponse)");
+  if (!idCart) throw new Error('Cart non créé (pas d\'ID dans la réponse)');
 
+  // ── Étape 4b : Insérer les produits via PUT /carts/:id ───
+  // PS attend les cart_rows dans les associations.
+  // Chaque row a : id_product, id_product_attribute, quantity, id_address_delivery
   const cartRowsXml = lignesResolues.map((ligne) => `
       <cart_row>
         <id_product><![CDATA[${ligne.idProduit}]]></id_product>
@@ -403,16 +485,19 @@ async function creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesRes
     <secure_key><![CDATA[${secureKey}]]></secure_key>
     <allow_seperated_package><![CDATA[0]]></allow_seperated_package>
     <associations>
-      <cart_rows>${cartRowsXml}</cart_rows>
+      <cart_rows>
+        ${cartRowsXml}
+      </cart_rows>
     </associations>
   </cart>
 </prestashop>`;
 
   await prestaWrite(`/carts/${idCart}`, xmlCartUpdate, 'PUT');
+
   return idCart;
 }
 
-// ─── Commande ─────────────────────────────────────────────────
+// ─── ÉTAPE 5 : Commande ───────────────────────────────────────
 
 function calculerTotaux(lignesResolues) {
   let totalHT = 0, totalTTC = 0;
@@ -428,9 +513,15 @@ function calculerTotaux(lignesResolues) {
   };
 }
 
-async function creerCommande({ idCustomer, idAdresse, idCart, secureKey, dateCommande, etatPS, lignesResolues }) {
+async function creerCommande({
+  idCustomer, idAdresse, idCart, secureKey,
+  dateCommande, etatPS, lignesResolues,
+}) {
   const { totalHT, totalTTC } = calculerTotaux(lignesResolues);
 
+  // IMPORTANT : ne pas inclure les order_rows dans le XML.
+  // PS les calcule lui-même depuis ps_cart_product (FIX #A).
+  // Les envoyer provoque un HTTP 500 sur certaines versions PS8.
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
   <order>
@@ -485,7 +576,7 @@ async function creerCommande({ idCustomer, idAdresse, idCart, secureKey, dateCom
   return postOrder(xml, idCart);
 }
 
-// ─── Historique état ──────────────────────────────────────────
+// ─── ÉTAPE 6 : Historique état ────────────────────────────────
 
 async function ajouterEtatCommande(idOrder, idOrderState) {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -502,49 +593,64 @@ async function ajouterEtatCommande(idOrder, idOrderState) {
   await prestaWrite('/order_histories', xml, 'POST');
 }
 
-// ─── Décrémentation stock ─────────────────────────────────────
+// ─── ÉTAPE 7 : Décrémentation stock via endpoint custom ───────
 
 /**
- * FIX #3 : endpoint corrigé → /updatestock (même que StockPage.jsx).
- * FIX #3b : on vérifie que la réponse n'est pas vide avant de parser JSON.
+ * Décrémente le stock via l'endpoint custom stockajax.
+ * Passe un delta négatif (ex: -3 pour retirer 3 unités).
+ *
+ * Réutilise le même endpoint que StockPage.jsx (mode delta).
  */
-async function decrementerStock(idProduit, idCombi, quantite, log, ref) {
-  let   responseText = '';
-  try {
-    const res = await fetch(STOCK_ENDPOINT, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        id_product:           Number(idProduit),
-        id_product_attribute: Number(idCombi) || 0,
-        delta:                -quantite, // négatif = sortie de stock
-      }),
-    });
+/**
+ * Décrémente le stock via /updatestock (même logique que stockService.applyStockDelta).
+ *
+ * Utilise le fichier standalone /updatestock (hors index PS, donc compatible
+ * avec le mode maintenance) et non le module stockajax.
+ *
+ * @param {number} idProduit
+ * @param {number} idCombi    - 0 si produit simple, ID PS si combinaison
+ * @param {number} quantite   - quantité commandée (positive, on la rend négative ici)
+ */
+async function decrementerStock(idProduit, idCombi, quantite) {
+  // Normaliser : s'assurer que idCombi est bien un entier (0 si simple)
+  const attrId = parseInt(idCombi, 10) || 0;
+  // CORRECT : delta négatif pour soustraire (updateQuantity fait quantity += delta)
+  const delta  = -quantite;
 
-    responseText = await res.text();
+  const res = await fetch(STOCK_ENDPOINT, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      id_product:           Number(idProduit),
+      id_product_attribute: attrId,
+      delta,
+    }),
+  });
 
-    // Vérifier que la réponse n'est pas vide avant de parser
-    if (!responseText || responseText.trim() === '') {
-      throw new Error(`Réponse vide de l'endpoint stock (HTTP ${res.status})`);
-    }
+  // Lire en texte d'abord pour diagnostiquer une réponse HTML (maintenance PS)
+  const text    = await res.text();
+  const trimmed = text.trim();
 
-    const data = JSON.parse(responseText);
-
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
-
-    return { newQty: data.quantity };
-
-  } catch (err) {
-    // Si c'est une erreur de parsing JSON, inclure le début de la réponse dans le message
-    if (err instanceof SyntaxError) {
-      throw new Error(
-        `Réponse JSON invalide de /updatestock : "${responseText.slice(0, 100)}"`
-      );
-    }
-    throw err;
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    throw new Error(
+      `/updatestock a retourné une réponse non-JSON (HTTP ${res.status}). ` +
+      `Vérifiez que /updatestock.php est accessible. ` +
+      `Réponse : ${trimmed.slice(0, 120)}`
+    );
   }
+
+  let data;
+  try { data = JSON.parse(trimmed); }
+  catch (e) { throw new Error(`/updatestock JSON invalide : ${trimmed.slice(0, 100)}`); }
+
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || `/updatestock HTTP ${res.status}`);
+  }
+
+  return {
+    newQty:    data.quantity,
+    qtyBefore: data.quantity_before ?? null,
+  };
 }
 
 // ─── Import principal ─────────────────────────────────────────
@@ -552,13 +658,12 @@ async function decrementerStock(idProduit, idCombi, quantite, log, ref) {
 export async function importerCommandes(commandes, onLog) {
   const log   = (type, message, ref = '') => onLog({ type, message, ref });
   const bilan = {
-    crees:            0,
-    cartsCrees:       0,  // paniers créés sans commande (cartOnly)
-    clientsCrees:     0,
-    clientsExistants: 0,
-    skips:            0,
-    erreurs:          0,
-    details:          [],
+    crees:             0,
+    clientsCrees:      0,
+    clientsExistants:  0,
+    skips:             0,
+    erreurs:           0,
+    details:           [],
   };
 
   // ── Pré-chargement produits ───────────────────────────────
@@ -599,24 +704,28 @@ export async function importerCommandes(commandes, onLog) {
     throw err;
   }
 
+  // Injecter le taux TVA dans chaque produit
   for (const [ref, produit] of produitsMap) {
     produit.taxRate = tauxParGroupe.get(produit.idTaxGroup) ?? 0;
     produitsMap.set(ref, produit);
   }
 
+  // Cache combinaisons par id produit (évite re-fetch)
   const combiCache = new Map();
 
   log('info', `Début import — ${commandes.length} commande(s) à traiter`);
 
   for (const commande of commandes) {
     const ref = commande.email;
-    const modeLabel = commande.cartOnly ? '[PANIER SEUL]' : '[COMMANDE]';
-    log('info', `── Ligne ${commande.ligneCSV} ${modeLabel} : ${commande.email}`, ref);
+    log('info', `── Commande ligne ${commande.ligneCSV} : ${commande.email}`, ref);
 
     try {
       // ── 1. Client + secure_key ──────────────────────────
+      log('info', `Recherche client : ${commande.email}`, ref);
       let idCustomer, secureKey;
-      const { id: idExistant, secureKey: skExistant, exists } = await chercherCustomer(commande.email);
+
+      const { id: idExistant, secureKey: skExistant, exists } =
+        await chercherCustomer(commande.email);
 
       if (exists) {
         idCustomer = idExistant;
@@ -632,8 +741,11 @@ export async function importerCommandes(commandes, onLog) {
       }
 
       if (!secureKey || secureKey.length < 30) {
-        throw new Error(`secure_key invalide pour ${commande.email} (longueur=${secureKey?.length})`);
+        throw new Error(
+          `secure_key invalide pour ${commande.email} (longueur=${secureKey?.length})`
+        );
       }
+      log('info', `secure_key OK (${secureKey.slice(0, 8)}…)`, ref);
 
       // ── 2. Adresse ──────────────────────────────────────
       let idAdresse = await chercherAdresse(idCustomer);
@@ -645,13 +757,19 @@ export async function importerCommandes(commandes, onLog) {
       }
 
       // ── 3. Résolution articles ──────────────────────────
+      log('info', `Résolution de ${commande.articles.length} article(s)…`, ref);
       const lignesResolues = [];
       let   erreurArticle  = false;
 
       for (const article of commande.articles) {
         const produit = produitsMap.get(article.reference);
         if (!produit) {
-          log('erreur', `Produit "${article.reference}" introuvable dans PS`, ref);
+          // Lister les références disponibles pour aider au diagnostic
+          const refsDispos = [...produitsMap.keys()].slice(0, 10).join(', ');
+          log('erreur',
+            `Produit "${article.reference}" introuvable dans PS (refs connues : ${refsDispos}…)`,
+            ref
+          );
           erreurArticle = true;
           break;
         }
@@ -660,9 +778,13 @@ export async function importerCommandes(commandes, onLog) {
         let supplementHT = 0;
 
         if (article.variante) {
+          // Charger les combinaisons si pas encore en cache
           if (!combiCache.has(produit.id)) {
             log('info', `Chargement combinaisons produit id=${produit.id}…`, ref);
-            const combis = await chargerCombinaisonsProduit(produit.id, (t, m) => log(t, m, ref));
+            const combis = await chargerCombinaisonsProduit(
+              produit.id,
+              (t, m) => log(t, m, ref)
+            );
             combiCache.set(produit.id, combis);
           }
 
@@ -671,19 +793,24 @@ export async function importerCommandes(commandes, onLog) {
           const combiData     = combisMap.get(varianteLower);
 
           if (!combiData) {
-            log('erreur', `Variante "${article.variante}" introuvable pour "${article.reference}"`, ref);
+            log('erreur',
+              `Variante "${article.variante}" introuvable pour "${article.reference}"`,
+              ref
+            );
             erreurArticle = true;
             break;
           }
 
           idCombi      = combiData.idCombi;
           supplementHT = combiData.supplementHT;
+          log('info', `Variante "${article.variante}" → id_combi=${idCombi}`, ref);
         }
 
         lignesResolues.push({
           reference:      article.reference,
           idProduit:      produit.id,
           idCombi:        idCombi || 0,
+          nomProduit:     article.reference,
           quantite:       article.quantite,
           prixUnitaireHT: produit.priceHT + supplementHT,
           tauxTVA:        produit.taxRate,
@@ -697,39 +824,42 @@ export async function importerCommandes(commandes, onLog) {
 
       if (erreurArticle) {
         bilan.erreurs++;
-        bilan.details.push({ ref, statut: 'erreur', raison: 'Article non résolu', email: commande.email });
+        bilan.details.push({
+          ref, statut: 'erreur', raison: 'Article non résolu', email: commande.email,
+        });
         continue;
       }
 
-      // ── 4. Cart + produits ──────────────────────────────
-      const idCart = await creerCartAvecProduits(idCustomer, idAdresse, secureKey, lignesResolues);
+      // ── 4. Cart + insertion produits ────────────────────
+      // POST /carts (vide) + PUT /carts/:id (avec cart_rows)
+      const idCart = await creerCartAvecProduits(
+        idCustomer, idAdresse, secureKey, lignesResolues
+      );
       log('succes', `Cart créé avec produits : id=${idCart}`, ref);
 
-      // ══════════════════════════════════════════════════════
-      // FIX #1 — cartOnly : panier uniquement, pas de commande
-      // ══════════════════════════════════════════════════════
-      if (commande.cartOnly) {
-        log('info',
-          `État vide → panier conservé sans commande (id_cart=${idCart})`,
-          ref
-        );
-        bilan.cartsCrees++;
+      // ── FIX 1 : état vide → panier abandonné, pas d'order ─
+      // Si etat est vide dans le CSV, on s'arrête ici.
+      // Le cart existe dans ps_cart + ps_cart_product, visible
+      // dans le backoffice React comme "panier abandonné".
+      if (!commande.etatPS) {
+        log('info', `État vide → panier abandonné conservé (pas de commande créée)`, ref);
+        bilan.paniers = (bilan.paniers || 0) + 1;
         bilan.details.push({
           ref,
-          statut:    'cart_only',
+          statut:    'panier',
           idCart,
           idCustomer,
           email:     commande.email,
           articles:  commande.articles.length,
         });
-        continue; // ← on s'arrête ici, pas de POST /orders
+        continue;
       }
 
-      // ── 5. Commande ─────────────────────────────────────
+      // ── 5. Commande (fallback robuste HTTP 500) ──────────
       const idOrder = await creerCommande({
         idCustomer, idAdresse, idCart, secureKey,
-        dateCommande: commande.date,
-        etatPS:       commande.etatPS,
+        dateCommande:  commande.date,
+        etatPS:        commande.etatPS,
         lignesResolues,
       });
       log('succes', `Commande créée : id=${idOrder}`, ref);
@@ -742,16 +872,23 @@ export async function importerCommandes(commandes, onLog) {
         log('warning', `Historique état non appliqué (non bloquant) : ${err.message}`, ref);
       }
 
-      // ── 7. Décrémentation stock (FIX #3) ─────────────────
+      // ── 7. Décrémentation stock ──────────────────────────
+      // POST /orders via l'API WS ne décrémente pas le stock.
+      // On appelle l'endpoint custom stockajax qui met à jour
+      // ps_stock_available ET insère dans ps_stock_mvt.
+      log('info', `[DEBUG] lignesResolues avant décrémentation: ${JSON.stringify(lignesResolues.map(l => ({ref: l.reference, qty: l.quantite, idCombi: l.idCombi})))}`, ref);
+      
       for (const ligne of lignesResolues) {
         try {
-          const result = await decrementerStock(ligne.idProduit, ligne.idCombi, ligne.quantite, log, ref);
+          log('info', `[DEBUG] Appel decrementerStock: ${ligne.reference} × ${ligne.quantite} (id_product=${ligne.idProduit}, id_combi=${ligne.idCombi})`, ref);
+          const result = await decrementerStock(
+            ligne.idProduit, ligne.idCombi, ligne.quantite
+          );
           log('info',
             `Stock "${ligne.reference}" → ${result.newQty} unités (-${ligne.quantite})`,
             ref
           );
         } catch (err) {
-          // Non bloquant — commande créée, stock à ajuster manuellement
           log('warning', `Stock "${ligne.reference}" : ${err.message}`, ref);
         }
       }
@@ -773,13 +910,17 @@ export async function importerCommandes(commandes, onLog) {
     } catch (err) {
       log('erreur', `Commande "${ref}" : ${err.message}`, ref);
       bilan.erreurs++;
-      bilan.details.push({ ref, statut: 'erreur', raison: err.message, email: commande.email });
+      bilan.details.push({
+        ref, statut: 'erreur', raison: err.message, email: commande.email,
+      });
     }
   }
 
+  const nbPaniers = bilan.paniers || 0;
   log('info',
-    `Import terminé — ✓ ${bilan.crees} commande(s) · 🛒 ${bilan.cartsCrees} panier(s) seul(s) · ` +
-    `👤 ${bilan.clientsCrees} client(s) créé(s) · ✓ ${bilan.clientsExistants} existant(s) · ✗ ${bilan.erreurs} erreur(s)`
+    `Import terminé — ✓ ${bilan.crees} commande(s) · 🛒 ${nbPaniers} panier(s) · ` +
+    `👤 ${bilan.clientsCrees} client(s) créé(s) · ` +
+    `✓ ${bilan.clientsExistants} existant(s) · ✗ ${bilan.erreurs} erreur(s)`
   );
   return bilan;
 }

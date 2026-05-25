@@ -524,14 +524,25 @@ function normaliserLignesCommande(rows) {
   if (!rows) return [];
   const liste = Array.isArray(rows) ? rows : [rows];
   return liste.map((r) => {
-    const qty       = Number(extraireValeur(r.product_quantity)) || 0;
-    const unitPrice = parseFloat(extraireValeur(r.unit_price_tax_incl) || 0);
+    const qty              = Number(extraireValeur(r.product_quantity)) || 0;
+    const unitPrice        = parseFloat(extraireValeur(r.unit_price_tax_incl) || 0);
+    const totalFromAPI     = parseFloat(extraireValeur(r.total_price_tax_incl) || 0);
+    const productId        = Number(extraireValeur(r.product_id));
+    const attributeId      = Number(extraireValeur(r.product_attribute_id)) || 0;
+    
+    // Si PrestaShop retourne un total_price_tax_incl, l'utiliser (plus fiable)
+    // Sinon le calculer à partir du prix unitaire et de la quantité
+    const totalPrice = totalFromAPI > 0 
+      ? totalFromAPI 
+      : Math.round(unitPrice * qty * 100) / 100;
+
     return {
-      productId:   Number(extraireValeur(r.product_id)),
-      productName: extraireValeur(r.product_name),
-      quantity:    qty,
+      productId,
+      productAttributeId: attributeId,  // ID de la combinaison (0 si produit simple)
+      productName:        extraireValeur(r.product_name),
+      quantity:           qty,
       unitPrice,
-      totalPrice:  Math.round(unitPrice * qty * 100) / 100,
+      totalPrice,
     };
   });
 }
@@ -555,4 +566,50 @@ export async function getOrderStates() {
       { id: 6, name: 'Annulé',                   color: '#2C3E50' },
     ];
   }
+}
+
+// ─── Duplication de commande ──────────────────────────────────
+
+export async function duplicateOrder(order, customerId, duplicateCount = 1) {
+  if (!order || !order.rows || order.rows.length === 0) {
+    throw new Error('Commande invalide ou sans articles');
+  }
+
+  // Transformer les rows en cartItems avec quantités multipliées
+  // Attention : productAttributeId de PrestaShop → combinationId pour le cartService
+  const cartItems = order.rows.map((row) => ({
+    productId:    row.productId,
+    combinationId: row.productAttributeId || 0,  // product_attribute_id en cartService
+    name:         row.productName,
+    quantity:     row.quantity * duplicateCount,
+    price:        row.unitPrice,
+  }));
+
+  console.log('[duplicateOrder] Création nouvelle commande', {
+    orderId:         order.id,
+    duplicateCount,
+    nbArticles:      cartItems.length,
+    customerId,
+    cartItems,
+  });
+
+  // Récupérer les adresses du client
+  const addresses = await getCustomerAddresses(customerId);
+  if (!addresses || addresses.length === 0) {
+    throw new Error('Aucune adresse trouvée pour ce client');
+  }
+
+  // Utiliser la première adresse (ou on pourrait proposer un choix)
+  const addressData = addresses[0];
+  const existingAddressId = addressData.id;
+
+  // Créer la nouvelle commande
+  const result = await createFullOrder({
+    customerId,
+    cartItems,
+    addressData,
+    existingAddressId,
+  });
+
+  return result;
 }

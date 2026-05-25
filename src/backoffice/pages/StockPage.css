@@ -535,3 +535,143 @@
   color: var(--c-texte-doux);
   font-style: italic;
 }
+
+/* ─────────────────────────────────────────────────────────────
+   AJOUT — Tableau stock par catégorie
+   À coller à la fin de StockPage.css
+   ───────────────────────────────────────────────────────────── */
+
+/* Carte pleine largeur (tableau catégories) */
+.stock-card--full {
+  grid-column: 1 / -1; /* s'étend sur toute la grille */
+}
+
+.stock-card__hint {
+  font-size: 11px;
+  color: var(--c-muted, #6b6860);
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+/* Bouton actualiser discret */
+.btn-cat-actualiser {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid #e2e0db;
+  background: #faf9f7;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #1a1814;
+  transition: background 0.12s;
+}
+.btn-cat-actualiser:hover:not(:disabled) { background: #f0ede8; }
+.btn-cat-actualiser:disabled { opacity: 0.5; cursor: default; }
+
+/* États loading / erreur / vide */
+.stock-cat-loading,
+.stock-cat-vide {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  font-size: 13px;
+  color: #6b6860;
+}
+
+.stock-cat-erreur {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: #fee2e2;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #991b1b;
+  margin: 8px 0;
+}
+
+.btn-cat-retry {
+  margin-left: auto;
+  padding: 4px 10px;
+  background: #fff;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #991b1b;
+}
+.btn-cat-retry:hover { background: #fee2e2; }
+
+/* Tableau */
+.stock-cat-tableau {
+  overflow-x: auto;
+}
+
+.stock-cat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.stock-cat-table thead tr {
+  background: #faf9f7;
+  border-bottom: 1px solid #e2e0db;
+}
+
+.stock-cat-table th {
+  padding: 9px 16px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b6860;
+}
+
+.stock-cat-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0ede8;
+  vertical-align: middle;
+}
+
+.stock-cat-table tbody tr:last-child td { border-bottom: none; }
+.stock-cat-table tbody tr:hover td { background: #faf9f7; }
+
+.stock-cat-table .col-qty { text-align: center; }
+
+.cat-nom {
+  font-weight: 500;
+  color: #1a1814;
+}
+
+/* Pilules de quantité */
+.qty-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', monospace;
+  min-width: 36px;
+  text-align: center;
+}
+
+.qty-pill--physique  { background: #dbeafe; color: #1e3a5f; }
+.qty-pill--reserve   { background: #fef3c7; color: #92400e; }
+.qty-pill--dispo     { background: #dcfce7; color: #166534; }
+.qty-pill--rupture   { background: #fee2e2; color: #991b1b; }
+
+.qty-zero {
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+/* Ligne totaux */
+.stock-cat-total td {
+  background: #faf9f7;
+  border-top: 2px solid #e2e0db;
+  padding: 10px 16px;
+  font-size: 13px;
+}
