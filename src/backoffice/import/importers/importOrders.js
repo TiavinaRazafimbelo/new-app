@@ -611,7 +611,7 @@ async function ajouterEtatCommande(idOrder, idOrderState) {
  * @param {number} idCombi    - 0 si produit simple, ID PS si combinaison
  * @param {number} quantite   - quantité commandée (positive, on la rend négative ici)
  */
-async function decrementerStock(idProduit, idCombi, quantite) {
+async function decrementerStock(idProduit, idCombi, quantite, registerOnly = false) {
   // Normaliser : s'assurer que idCombi est bien un entier (0 si simple)
   const attrId = parseInt(idCombi, 10) || 0;
   // CORRECT : delta négatif pour soustraire (updateQuantity fait quantity += delta)
@@ -624,6 +624,7 @@ async function decrementerStock(idProduit, idCombi, quantite) {
       id_product:           Number(idProduit),
       id_product_attribute: attrId,
       delta,
+      register_only:        registerOnly,  // ← Enregistrer seulement, sans modifier le stock
     }),
   });
 
@@ -873,23 +874,24 @@ export async function importerCommandes(commandes, onLog) {
       }
 
       // ── 7. Décrémentation stock ──────────────────────────
-      // POST /orders via l'API WS ne décrémente pas le stock.
-      // On appelle l'endpoint custom stockajax qui met à jour
-      // ps_stock_available ET insère dans ps_stock_mvt.
+      // PrestaShop décrémente automatiquement le stock (parent + combis)
+      // lors de la création de la commande via l'API POST /orders.
+      // On appelle juste l'endpoint pour ENREGISTRER le mouvement (register_only: true)
+      // sans modifier le stock une deuxième fois.
       log('info', `[DEBUG] lignesResolues avant décrémentation: ${JSON.stringify(lignesResolues.map(l => ({ref: l.reference, qty: l.quantite, idCombi: l.idCombi})))}`, ref);
       
       for (const ligne of lignesResolues) {
         try {
-          log('info', `[DEBUG] Appel decrementerStock: ${ligne.reference} × ${ligne.quantite} (id_product=${ligne.idProduit}, id_combi=${ligne.idCombi})`, ref);
+          log('info', `[DEBUG] Enregistrement mouvement stock: ${ligne.reference} × ${ligne.quantite} (id_product=${ligne.idProduit}, id_combi=${ligne.idCombi})`, ref);
           const result = await decrementerStock(
-            ligne.idProduit, ligne.idCombi, ligne.quantite
+            ligne.idProduit, ligne.idCombi, ligne.quantite, true  // ← register_only: true
           );
           log('info',
-            `Stock "${ligne.reference}" → ${result.newQty} unités (-${ligne.quantite})`,
+            `Mouvement "${ligne.reference}" enregistré (qty actuelle: ${result.newQty})`,
             ref
           );
         } catch (err) {
-          log('warning', `Stock "${ligne.reference}" : ${err.message}`, ref);
+          log('warning', `Enregistrement mouvement "${ligne.reference}" : ${err.message}`, ref);
         }
       }
 
